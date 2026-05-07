@@ -177,7 +177,7 @@ def place_buy(pair_id, price, idr_amount):
         "pair": pair_id,
         "type": "buy",
         "price": str(int(price)),
-        "idr": str(int(idr_amount))
+        "amount": str(int(idr_amount))
     })
     log(f"📥 BUY response: {result}")
     return result
@@ -189,7 +189,7 @@ def place_sell(pair_id, price, qty):
         "pair": pair_id,
         "type": "sell",
         "price": str(int(price)),
-        coin: str(qty)
+        amount: str(qty)
     })
     log(f"📥 SELL response: {result}")
     return result
