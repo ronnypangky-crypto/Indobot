@@ -65,7 +65,7 @@ def indodax_request(method, params={}):
     sign = hmac.new(SECRET_KEY.encode(), body.encode(), hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": sign}
     try:
-        r = requests.post(INDODAX_URL, data=params, headers=headers, timeout=10)
+        r = requests.post(INDODAX_URL, data=body, headers=headers, timeout=10)
         return r.json()
     except Exception as e:
         log(f"API Error: {e}")
