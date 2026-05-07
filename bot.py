@@ -65,7 +65,7 @@ def indodax_request(method, params={}):
     sign = hmac.new(SECRET_KEY.encode(), body.encode(), hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": sign}
     try:
-        r = requests.post(INDODAX_URL, data=body, headers=headers, timeout=10)
+        r = requests.post(INDODAX_URL, data=params, headers=headers, timeout=10)
         return r.json()
     except Exception as e:
         log(f"API Error: {e}")
@@ -177,7 +177,7 @@ def place_buy(pair_id, price, idr_amount):
         "pair": pair_id,
         "type": "buy",
         "price": str(int(price)),
-        "amount": str(int(idr_amount))
+        "idr": str(int(idr_amount))
     })
     log(f"📥 BUY response: {result}")
     return result
@@ -189,7 +189,7 @@ def place_sell(pair_id, price, qty):
         "pair": pair_id,
         "type": "sell",
         "price": str(int(price)),
-        amount: str(qty)
+        coin: str(qty)
     })
     log(f"📥 SELL response: {result}")
     return result
