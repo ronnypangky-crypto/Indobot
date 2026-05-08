@@ -6,7 +6,7 @@ import requests
 import urllib.parse
 from datetime import datetime
 
-# ── Konfigurasi (dari environment variables) ──────────
+# ── Konfigurasi ────────────────────────────────────────
 API_KEY    = os.environ.get("INDODAX_API_KEY", "")
 SECRET_KEY = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
@@ -15,14 +15,14 @@ MODAL      = float(os.environ.get("MODAL", "100000"))
 TARGET     = float(os.environ.get("TARGET_PROFIT", "20000"))
 STOP_LOSS  = float(os.environ.get("STOP_LOSS_PCT", "3"))
 
-INDODAX_URL = "https://indodax.com/tapi"
-SCAN_INTERVAL = 60  # detik
+INDODAX_TAPI = "https://indodax.com/tapi"
+SCAN_INTERVAL = 60
 
 # ── State ──────────────────────────────────────────────
-modal        = MODAL
-total_profit = 0.0
-daily_profit = 0.0
-total_trades = 0
+modal         = MODAL
+total_profit  = 0.0
+daily_profit  = 0.0
+total_trades  = 0
 open_position = None
 price_history = {}
 all_pairs     = []
@@ -36,11 +36,11 @@ def fmt(n):
     if n >= 1e3:  return f"Rp {n/1e3:.0f}rb"
     return f"Rp {n:.0f}"
 
-def now():
+def now_str():
     return datetime.now().strftime("%H:%M:%S")
 
 def log(msg):
-    print(f"[{now()}] {msg}")
+    print(f"[{now_str()}] {msg}", flush=True)
 
 # ── Telegram ───────────────────────────────────────────
 def send_telegram(msg):
@@ -57,21 +57,40 @@ def send_telegram(msg):
         log(f"TG Error: {e}")
 
 # ── Indodax Private API ────────────────────────────────
-def indodax_request(method, params={}):
-    params["method"]    = method
-    params["timestamp"] = str(int(time.time() * 1000))
-    params["recvWindow"] = "5000"
-    body = urllib.parse.urlencode(params)
+def indodax_request(method, params=None):
+    if params is None:
+        params = {}
+    data = {
+        "method":     method,
+        "timestamp":  str(int(time.time() * 1000)),
+        "recvWindow": "5000",
+    }
+    data.update(params)
+    body = urllib.parse.urlencode(data)
     sign = hmac.new(SECRET_KEY.encode(), body.encode(), hashlib.sha512).hexdigest()
     headers = {"Key": API_KEY, "Sign": sign}
     try:
-        r = requests.post(INDODAX_URL, data=params, headers=headers, timeout=10)
+        r = requests.post(INDODAX_TAPI, data=data, headers=headers, timeout=15)
         return r.json()
     except Exception as e:
-        log(f"API Error: {e}")
+        log(f"API Error [{method}]: {e}")
         return None
 
-# ── Fetch semua pair Indodax ───────────────────────────
+# ── Test koneksi API ───────────────────────────────────
+def test_api():
+    log("🔑 Test koneksi API Indodax...")
+    result = indodax_request("getInfo")
+    if result and result.get("success") == 1:
+        idr = result["return"]["balance"].get("idr", 0)
+        log(f"✅ API OK! Saldo IDR: {fmt(float(idr))}")
+        send_telegram(f"✅ *API Indodax Konek!*\nSaldo IDR: {fmt(float(idr))}")
+        return True
+    else:
+        log(f"❌ API gagal: {result}")
+        send_telegram(f"❌ *API Gagal!*\nResponse: {result}")
+        return False
+
+# ── Fetch semua pair ───────────────────────────────────
 def fetch_all_pairs():
     global all_pairs, pair_labels, prices, price_history
     try:
@@ -82,17 +101,16 @@ def fetch_all_pairs():
         for key, val in tickers.items():
             if not key.endswith("_idr"):
                 continue
-            pair_id = key.replace("_", "")
-            label   = key.replace("_idr", "").upper() + "/IDR"
-            last    = float(val.get("last", 0))
+            last = float(val.get("last", 0))
             if last <= 0:
                 continue
-            all_pairs.append(pair_id)
-            pair_labels[pair_id] = label
-            prices[pair_id]      = last
-            if pair_id not in price_history:
-                price_history[pair_id] = []
-            price_history[pair_id].append(last)
+            label = key.replace("_idr", "").upper() + "/IDR"
+            all_pairs.append(key)
+            pair_labels[key] = label
+            prices[key] = last
+            if key not in price_history:
+                price_history[key] = []
+            price_history[key].append(last)
         log(f"📡 Load {len(all_pairs)} pair dari Indodax")
         return True
     except Exception as e:
@@ -106,15 +124,12 @@ def fetch_prices():
         d = r.json()
         tickers = d.get("tickers", {})
         for pair_id in all_pairs:
-            key = pair_id.replace("idr", "_idr")
-            if key not in tickers:
+            if pair_id not in tickers:
                 continue
-            last = float(tickers[key].get("last", 0))
+            last = float(tickers[pair_id].get("last", 0))
             if last <= 0:
                 continue
             prices[pair_id] = last
-            if pair_id not in price_history:
-                price_history[pair_id] = []
             price_history[pair_id].append(last)
             if len(price_history[pair_id]) > 50:
                 price_history[pair_id].pop(0)
@@ -138,7 +153,6 @@ def calc_sma(arr, period):
         return arr[-1] if arr else 0
     return sum(arr[-period:]) / period
 
-# ── Cek sinyal semua strategi ──────────────────────────
 def check_signals(pair_id):
     hist = price_history.get(pair_id, [])
     if len(hist) < 5:
@@ -152,10 +166,9 @@ def check_signals(pair_id):
     count, reasons = 0, []
     if rsi < 40:     count += 1; reasons.append(f"RSI={rsi:.1f}")
     if sma5 > sma20: count += 1; reasons.append("SMA bullish")
-    if vol > 0.5:    count += 1; reasons.append(f"Grid vol={vol:.1f}%")
+    if vol > 0.5:    count += 1; reasons.append(f"vol={vol:.1f}%")
     return count, reasons
 
-# ── Pilih pair terbaik ─────────────────────────────────
 def choose_best_pair():
     best_pair, best_score = None, -1
     for pair_id in all_pairs:
@@ -170,41 +183,35 @@ def choose_best_pair():
             best_pair  = pair_id
     return best_pair
 
-# ── Eksekusi Order REAL ke Indodax ────────────────────
+# ── Order REAL ke Indodax ──────────────────────────────
 def place_buy(pair_id, price, idr_amount):
-    log(f"📤 Sending BUY order: {pair_id} | Harga: {int(price)} | IDR: {int(idr_amount)}")
-    result = indodax_request("trade", {
-        "pair": pair_id,
-        "type": "buy",
+    log(f"📤 BUY {pair_id} | Harga:{int(price)} | IDR:{int(idr_amount)}")
+    return indodax_request("trade", {
+        "pair":  pair_id,
+        "type":  "buy",
         "price": str(int(price)),
-        "idr": str(int(idr_amount))
+        "idr":   str(int(idr_amount)),
     })
-    log(f"📥 BUY response: {result}")
-    return result
 
 def place_sell(pair_id, price, qty):
-    coin = pair_id.replace("idr", "")
-    log(f"📤 Sending SELL order: {pair_id} | Harga: {int(price)} | {coin}: {qty:.6f}")
-    result = indodax_request("trade", {
-        "pair": pair_id,
-        "type": "sell",
+    coin = pair_id.replace("_idr", "")
+    log(f"📤 SELL {pair_id} | Harga:{int(price)} | {coin}:{qty:.8f}")
+    return indodax_request("trade", {
+        "pair":  pair_id,
+        "type":  "sell",
         "price": str(int(price)),
-        coin: str(qty)
+        coin:    f"{qty:.8f}",
     })
-    log(f"📥 SELL response: {result}")
-    return result
 
-# ── Bot logic ──────────────────────────────────────────
+# ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
     global modal, total_profit, daily_profit, total_trades, open_position
 
     if daily_profit >= TARGET:
-        msg = f"🎯 *TARGET TERCAPAI!*\nProfit: {fmt(daily_profit)}\nTotal trade: {total_trades}\nModal: {fmt(modal)}"
         log(f"🎯 Target tercapai! {fmt(daily_profit)}")
-        send_telegram(msg)
-        return False  # stop bot
+        send_telegram(f"🎯 *TARGET TERCAPAI!*\nProfit: {fmt(daily_profit)}\nTotal trade: {total_trades}\nModal: {fmt(modal)}")
+        return False
 
-    # Jika ada posisi terbuka → cek exit
     if open_position:
         pair_id   = open_position["pair"]
         buy_price = open_position["buy_price"]
@@ -217,33 +224,34 @@ def bot_tick():
 
         log(f"📊 {label} | Beli:{fmt(buy_price)} | Kini:{fmt(curr)} | P/L:{fmt(pl)}")
 
-        # Take profit
         if pl >= TARGET * 0.4:
             result = place_sell(pair_id, curr, qty)
             if result and result.get("success") == 1:
-                modal        += idr_in + pl
+                modal += idr_in + pl
                 total_profit += pl
                 daily_profit += pl
                 total_trades += 1
                 open_position = None
-                log(f"💰 JUAL {label} | {fmt(curr)} | P/L: {fmt(pl)}")
-                send_telegram(f"💰 *JUAL {label}*\nHarga: {fmt(curr)}\nP/L: {fmt(pl)}\nProfit hari ini: {fmt(daily_profit)}\nModal: {fmt(modal)}")
+                log(f"💰 JUAL {label} | P/L: {fmt(pl)}")
+                send_telegram(f"💰 *JUAL {label}*\nHarga: {fmt(curr)}\nP/L: {fmt(pl)}\nProfit: {fmt(daily_profit)}\nModal: {fmt(modal)}")
+            else:
+                log(f"⚠️ Gagal jual: {result}")
+                send_telegram(f"⚠️ Gagal JUAL {label}\n{result}")
 
-        # Stop loss
         elif pl_pct <= -STOP_LOSS:
             result = place_sell(pair_id, curr, qty)
             if result and result.get("success") == 1:
-                modal        += idr_in + pl
+                modal += idr_in + pl
                 total_profit += pl
                 daily_profit += pl
                 total_trades += 1
                 open_position = None
-                log(f"🛑 STOP LOSS {label} | {fmt(curr)} | Loss: {fmt(pl)}")
+                log(f"🛑 STOP LOSS {label} | Loss: {fmt(pl)}")
                 send_telegram(f"🛑 *STOP LOSS {label}*\nHarga: {fmt(curr)}\nLoss: {fmt(pl)}\nModal: {fmt(modal)}")
-
+            else:
+                log(f"⚠️ Gagal stop loss: {result}")
         return True
 
-    # Cari peluang beli
     pair_id = choose_best_pair()
     if not pair_id:
         log("⏳ Scan pasar — menunggu 2/3 sinyal...")
@@ -263,36 +271,39 @@ def bot_tick():
         open_position = {"pair": pair_id, "buy_price": price, "qty": qty, "idr": idr_in}
         log(f"🛒 BELI {label} | {fmt(price)} | {qty:.6f} unit | {reason}")
         send_telegram(f"🛒 *BELI {label}*\nHarga: {fmt(price)}\nUnit: {qty:.6f}\nModal: {fmt(idr_in)}\nAlasan: {reason}")
+    else:
+        log(f"⚠️ Gagal beli {label}: {result}")
+        send_telegram(f"⚠️ Gagal BELI {label}\n{result}")
 
     return True
 
 # ── Main ───────────────────────────────────────────────
 def main():
     global modal, daily_profit
-    log("🚀 IndoBot Python dimulai...")
+    log("🚀 IndoBot dimulai...")
 
-    # Retry load pair sampai berhasil
+    while not test_api():
+        log("⏳ Retry test API dalam 30 detik...")
+        time.sleep(30)
+
     while not fetch_all_pairs():
         log("⏳ Retry load pair dalam 30 detik...")
         time.sleep(30)
 
-    send_telegram(f"🚀 *IndoBot AKTIF (Cloud 24 Jam)*\nModal: {fmt(MODAL)}\nTarget: {fmt(TARGET)}\nStop Loss: {STOP_LOSS}%\nScan: {len(all_pairs)} pair\nStrategi: RSI + SMA + GRID")
-    log(f"✅ Bot aktif | Modal:{fmt(modal)} | Target:{fmt(TARGET)} | {len(all_pairs)} pair")
+    send_telegram(f"🚀 *IndoBot AKTIF*\nModal: {fmt(MODAL)}\nTarget: {fmt(TARGET)}\nStop Loss: {STOP_LOSS}%\nScan: {len(all_pairs)} pair")
+    log(f"✅ Bot aktif | {len(all_pairs)} pair")
 
     while True:
         try:
             fetch_prices()
             running = bot_tick()
             if not running:
-                log("🏁 Bot selesai — target tercapai!")
-                # Reset daily profit dan lanjut besok
                 daily_profit = 0
-                log("🔄 Reset harian — bot lanjut besok...")
-                time.sleep(3600)  # tunggu 1 jam
+                log("🔄 Reset — lanjut besok...")
+                time.sleep(3600)
             time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
-            log("🔴 Bot dihentikan manual")
-            send_telegram(f"🔴 *IndoBot DIHENTIKAN*\nTotal Profit: {fmt(total_profit)}\nTotal Trade: {total_trades}")
+            send_telegram(f"🔴 *IndoBot STOP*\nProfit: {fmt(total_profit)}\nTrade: {total_trades}")
             break
         except Exception as e:
             log(f"⚠️ Error: {e}")
