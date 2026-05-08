@@ -183,23 +183,27 @@ def choose_best_pair():
             best_pair  = pair_id
     return best_pair
 
-# ── Order REAL ke Indodax ──────────────────────────────
+# ── Order REAL ke Indodax (Market Order) ──────────────
 def place_buy(pair_id, price, idr_amount):
-    log(f"📤 BUY {pair_id} | Harga:{int(price)} | IDR:{int(idr_amount)}")
+    log(f"📤 MARKET BUY {pair_id} | IDR:{int(idr_amount)}")
+    # Market order = pasang harga sedikit lebih tinggi supaya langsung terisi
+    market_price = int(price * 1.01)  # 1% di atas harga pasar
     return indodax_request("trade", {
         "pair":  pair_id,
         "type":  "buy",
-        "price": str(int(price)),
+        "price": str(market_price),
         "idr":   str(int(idr_amount)),
     })
 
 def place_sell(pair_id, price, qty):
     coin = pair_id.replace("_idr", "")
-    log(f"📤 SELL {pair_id} | Harga:{int(price)} | {coin}:{qty:.8f}")
+    log(f"📤 MARKET SELL {pair_id} | {coin}:{qty:.8f}")
+    # Market order = pasang harga sedikit lebih rendah supaya langsung terisi
+    market_price = int(price * 0.99)  # 1% di bawah harga pasar
     return indodax_request("trade", {
         "pair":  pair_id,
         "type":  "sell",
-        "price": str(int(price)),
+        "price": str(market_price),
         coin:    f"{qty:.8f}",
     })
 
