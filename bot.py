@@ -170,7 +170,7 @@ def choose_best_pair():
             best_pair  = pair_id
     return best_pair
 
-# ── Eksekusi Order (simulasi dulu) ─────────────────────
+# ── Eksekusi Order REAL ke Indodax ────────────────────
 def place_buy(pair_id, price, idr_amount):
     log(f"📤 Sending BUY order: {pair_id} | Harga: {int(price)} | IDR: {int(idr_amount)}")
     result = indodax_request("trade", {
