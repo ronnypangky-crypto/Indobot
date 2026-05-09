@@ -291,13 +291,15 @@ def place_buy(pair_id, price, idr_amount):
 
 def place_sell(pair_id, price, qty):
     coin = pair_id.replace("_idr", "")
-    log(f"📤 MARKET SELL {pair_id} | {coin}:{qty:.8f}")
+    # Kurangi qty 0.5% untuk cover fee Indodax supaya tidak Insufficient balance
+    qty_after_fee = qty * 0.995
+    log(f"📤 MARKET SELL {pair_id} | {coin}:{qty_after_fee:.8f}")
     market_price = int(price * 0.99)
     return indodax_request("trade", {
         "pair":  pair_id,
         "type":  "sell",
         "price": str(market_price),
-        coin:    f"{qty:.8f}",
+        coin:    f"{qty_after_fee:.8f}",
     })
 
 # ── Bot Logic ──────────────────────────────────────────
