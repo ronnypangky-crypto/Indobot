@@ -7,30 +7,28 @@ import urllib.parse
 from datetime import datetime
 
 # ── Konfigurasi ────────────────────────────────────────
-API_KEY    = os.environ.get("INDODAX_API_KEY", "")
-SECRET_KEY = os.environ.get("INDODAX_SECRET_KEY", "")
-TG_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
-TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
-MODAL      = float(os.environ.get("MODAL", "100000"))
-TARGET     = float(os.environ.get("TARGET_PROFIT", "20000"))
-STOP_LOSS  = float(os.environ.get("STOP_LOSS_PCT", "3"))
-
-INDODAX_TAPI  = "https://indodax.com/tapi"
+API_KEY      = os.environ.get("INDODAX_API_KEY", "")
+SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
+TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
+TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+MODAL        = float(os.environ.get("MODAL", "170000"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "2000"))
+STOP_LOSS    = float(os.environ.get("STOP_LOSS_PCT", "2"))
+MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))      # maksimal 3 posisi sekaligus
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "20"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "5"))
 SCAN_INTERVAL = 60
-MIN_SIGNALS   = 5   # minimal sinyal sebelum beli
-TOP_N_PAIRS   = 20  # hanya top 20 volume tertinggi
 
 # ── State ──────────────────────────────────────────────
-modal         = MODAL
-total_profit  = 0.0
-daily_profit  = 0.0
-total_trades  = 0
-open_position = None
-price_history = {}
-volume_history= {}
-all_pairs     = []
-pair_labels   = {}
-prices        = {}
+modal          = MODAL
+total_profit   = 0.0
+total_trades   = 0
+open_positions = {}   # {pair_id: {buy_price, qty, idr}}
+price_history  = {}
+volume_history = {}
+all_pairs      = []
+pair_labels    = {}
+prices         = {}
 
 # ── Helpers ────────────────────────────────────────────
 def fmt(n):
@@ -49,7 +47,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v3*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v4*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -79,6 +77,8 @@ def indodax_request(method, params=None):
         log(f"API Error [{method}]: {e}")
         return None
 
+INDODAX_TAPI = "https://indodax.com/tapi"
+
 # ── Test API ───────────────────────────────────────────
 def test_api():
     log("🔑 Test koneksi API Indodax...")
@@ -93,43 +93,44 @@ def test_api():
         send_telegram(f"❌ *API Gagal!*\nResponse: {result}")
         return False
 
-# ── Fetch TOP 20 pair volume tertinggi ────────────────
+# ── Get coin balance ───────────────────────────────────
+def get_coin_balance(coin):
+    result = indodax_request("getInfo")
+    if result and result.get("success") == 1:
+        return float(result["return"]["balance"].get(coin, 0))
+    return 0
+
+# ── Fetch TOP 20 pair volume tertinggi ─────────────────
 def fetch_all_pairs():
     global all_pairs, pair_labels, prices, price_history, volume_history
     try:
         r = requests.get("https://indodax.com/api/summaries", timeout=10)
         d = r.json()
         tickers = d.get("tickers", {})
-
-        # Kumpulkan semua pair IDR dengan volume
         pair_list = []
         for key, val in tickers.items():
             if not key.endswith("_idr"):
                 continue
-            last   = float(val.get("last", 0))
-            vol    = float(val.get("vol_idr", 0))
+            last = float(val.get("last", 0))
+            vol  = float(val.get("vol_idr", 0))
             if last <= 0 or vol <= 0:
                 continue
             pair_list.append((key, last, vol))
-
-        # Sort by volume IDR tertinggi → ambil TOP 20
         pair_list.sort(key=lambda x: x[2], reverse=True)
         top_pairs = pair_list[:TOP_N_PAIRS]
-
         all_pairs = []
         for key, last, vol in top_pairs:
             label = key.replace("_idr", "").upper() + "/IDR"
             all_pairs.append(key)
-            pair_labels[key]   = label
-            prices[key]        = last
-            volume_history[key]= [vol]
+            pair_labels[key]    = label
+            prices[key]         = last
+            volume_history[key] = [vol]
             if key not in price_history:
                 price_history[key] = []
             price_history[key].append(last)
-
         names = [pair_labels[p] for p in all_pairs]
-        log(f"📡 Top {TOP_N_PAIRS} pair by volume: {', '.join(names)}")
-        send_telegram(f"📡 *Top {TOP_N_PAIRS} Pair Volume Tertinggi:*\n{', '.join(names)}")
+        log(f"📡 Top {TOP_N_PAIRS} pair: {', '.join(names)}")
+        send_telegram(f"📡 *Top {TOP_N_PAIRS} Pair:*\n{', '.join(names)}")
         return True
     except Exception as e:
         log(f"⚠️ Gagal load pair: {e}")
@@ -187,11 +188,10 @@ def calc_rsi(arr, period=14):
 def calc_macd(arr):
     if len(arr) < 26:
         return 0, 0, 0
-    ema12    = calc_ema(arr, 12)
-    ema26    = calc_ema(arr, 26)
-    macd     = ema12 - ema26
-    # Signal line = EMA 9 dari MACD (simplified)
-    signal   = macd * 0.9
+    ema12     = calc_ema(arr, 12)
+    ema26     = calc_ema(arr, 26)
+    macd      = ema12 - ema26
+    signal    = macd * 0.9
     histogram = macd - signal
     return macd, signal, histogram
 
@@ -201,86 +201,50 @@ def calc_bollinger(arr, period=20):
     sma    = calc_sma(arr, period)
     recent = arr[-period:]
     std    = (sum((x - sma) ** 2 for x in recent) / period) ** 0.5
-    upper  = sma + 2 * std
-    lower  = sma - 2 * std
-    return upper, sma, lower
+    return sma + 2 * std, sma, sma - 2 * std
 
-def calc_volume_signal(arr):
-    if len(arr) < 5:
-        return False
-    avg_vol  = sum(arr[:-1]) / (len(arr) - 1)
-    curr_vol = arr[-1]
-    return curr_vol > avg_vol * 1.2  # volume 20% di atas rata-rata
-
-# ── Cek semua sinyal ───────────────────────────────────
 def check_signals(pair_id):
-    hist   = price_history.get(pair_id, [])
-    vol_h  = volume_history.get(pair_id, [])
+    hist  = price_history.get(pair_id, [])
+    vol_h = volume_history.get(pair_id, [])
     if len(hist) < 26:
         return 0, []
-
-    price  = prices.get(pair_id, 0)
-    rsi    = calc_rsi(hist)
-    sma5   = calc_sma(hist, 5)
-    sma20  = calc_sma(hist, 20)
+    price = prices.get(pair_id, 0)
+    rsi   = calc_rsi(hist)
+    sma5  = calc_sma(hist, 5)
+    sma20 = calc_sma(hist, 20)
     macd, signal, histogram = calc_macd(hist)
     upper, mid, lower = calc_bollinger(hist)
-    vol_up = calc_volume_signal(vol_h)
-
-    count, reasons = 0, []
-
-    # 1. RSI oversold
-    if rsi < 40:
-        count += 1
-        reasons.append(f"RSI={rsi:.1f}✅")
-
-    # 2. SMA bullish crossover
-    if sma5 > sma20:
-        count += 1
-        reasons.append("SMA↑✅")
-
-    # 3. MACD bullish (MACD > Signal)
-    if macd > signal and histogram > 0:
-        count += 1
-        reasons.append("MACD↑✅")
-
-    # 4. Bollinger Bands — harga di bawah lower band (oversold)
-    if price <= lower * 1.01:
-        count += 1
-        reasons.append("BB-Low✅")
-
-    # 5. EMA bullish
     ema9  = calc_ema(hist, 9)
     ema21 = calc_ema(hist, 21)
-    if ema9 > ema21:
-        count += 1
-        reasons.append("EMA↑✅")
-
-    # 6. Volume tinggi
-    if vol_up:
-        count += 1
-        reasons.append("Vol↑✅")
-
+    vol_up = len(vol_h) >= 5 and vol_h[-1] > (sum(vol_h[:-1]) / (len(vol_h)-1)) * 1.2
+    count, reasons = 0, []
+    if rsi < 40:              count += 1; reasons.append(f"RSI={rsi:.1f}✅")
+    if sma5 > sma20:          count += 1; reasons.append("SMA↑✅")
+    if macd > signal:         count += 1; reasons.append("MACD↑✅")
+    if price <= lower * 1.01: count += 1; reasons.append("BB-Low✅")
+    if ema9 > ema21:          count += 1; reasons.append("EMA↑✅")
+    if vol_up:                count += 1; reasons.append("Vol↑✅")
     return count, reasons
 
-# ── Pilih pair terbaik ─────────────────────────────────
-def choose_best_pair():
-    best_pair, best_score = None, -1
+# ── Pilih pair terbaik yang belum dibeli ───────────────
+def choose_best_pairs():
+    candidates = []
     for pair_id in all_pairs:
-        count, _ = check_signals(pair_id)
+        if pair_id in open_positions:
+            continue  # skip yang sudah dibeli
+        count, reasons = check_signals(pair_id)
         if count < MIN_SIGNALS:
             continue
         price = prices.get(pair_id, 0)
-        if modal * 0.9 < price * 0.0001:
+        if modal / MAX_TRADES < price * 0.0001:
             continue
-        if count > best_score:
-            best_score = count
-            best_pair  = pair_id
-    return best_pair
+        candidates.append((pair_id, count, reasons))
+    candidates.sort(key=lambda x: x[1], reverse=True)
+    return candidates
 
-# ── Order REAL Market Order ────────────────────────────
+# ── Order ──────────────────────────────────────────────
 def place_buy(pair_id, price, idr_amount):
-    log(f"📤 MARKET BUY {pair_id} | IDR:{int(idr_amount)}")
+    log(f"📤 BUY {pair_id} | IDR:{int(idr_amount)}")
     market_price = int(price * 1.01)
     return indodax_request("trade", {
         "pair":  pair_id,
@@ -289,33 +253,31 @@ def place_buy(pair_id, price, idr_amount):
         "idr":   str(int(idr_amount)),
     })
 
-def place_sell(pair_id, price, qty):
+def place_sell(pair_id, price):
     coin = pair_id.replace("_idr", "")
-    # Kurangi qty 0.5% untuk cover fee Indodax supaya tidak Insufficient balance
-    qty_after_fee = qty * 0.995
-    log(f"📤 MARKET SELL {pair_id} | {coin}:{qty_after_fee:.8f}")
+    actual_qty = get_coin_balance(coin)
+    if actual_qty <= 0:
+        log(f"⚠️ Saldo {coin} kosong!")
+        return {"success": 0, "error": "Zero balance"}
+    log(f"📤 SELL {pair_id} | {coin}:{actual_qty:.8f}")
     market_price = int(price * 0.99)
     return indodax_request("trade", {
         "pair":  pair_id,
         "type":  "sell",
         "price": str(market_price),
-        coin:    f"{qty_after_fee:.8f}",
+        coin:    f"{actual_qty:.8f}",
     })
 
 # ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
-    global modal, total_profit, daily_profit, total_trades, open_position
+    global modal, total_profit, total_trades
 
-    if daily_profit >= TARGET:
-        log(f"🎯 Target tercapai! {fmt(daily_profit)}")
-        send_telegram(f"🎯 *TARGET TERCAPAI!*\nProfit: {fmt(daily_profit)}\nTotal trade: {total_trades}\nModal: {fmt(modal)}")
-        return False
-
-    if open_position:
-        pair_id   = open_position["pair"]
-        buy_price = open_position["buy_price"]
-        qty       = open_position["qty"]
-        idr_in    = open_position["idr"]
+    # Cek semua posisi terbuka
+    for pair_id in list(open_positions.keys()):
+        pos       = open_positions[pair_id]
+        buy_price = pos["buy_price"]
+        qty       = pos["qty"]
+        idr_in    = pos["idr"]
         label     = pair_labels.get(pair_id, pair_id)
         curr      = prices.get(pair_id, buy_price)
         pl        = (curr - buy_price) * qty
@@ -323,66 +285,91 @@ def bot_tick():
 
         log(f"📊 {label} | Beli:{fmt(buy_price)} | Kini:{fmt(curr)} | P/L:{fmt(pl)} ({pl_pct:.2f}%)")
 
-        # Take profit
-        if pl >= TARGET * 0.4:
-            result = place_sell(pair_id, curr, qty)
+        # Take profit Rp 2.000
+        if pl >= TAKE_PROFIT:
+            result = place_sell(pair_id, curr)
             if result and result.get("success") == 1:
                 modal        += idr_in + pl
                 total_profit += pl
-                daily_profit += pl
                 total_trades += 1
-                open_position = None
-                log(f"💰 JUAL {label} | P/L: {fmt(pl)}")
-                send_telegram(f"💰 *JUAL {label}*\nHarga: {fmt(curr)}\nP/L: {fmt(pl)}\nProfit hari ini: {fmt(daily_profit)}\nModal: {fmt(modal)}")
+                del open_positions[pair_id]
+                log(f"💰 JUAL {label} | P/L: {fmt(pl)} | Total profit: {fmt(total_profit)}")
+                send_telegram(
+                    f"💰 *JUAL {label}*\n"
+                    f"Harga: {fmt(curr)}\n"
+                    f"P/L: {fmt(pl)}\n"
+                    f"Total Profit: {fmt(total_profit)}\n"
+                    f"Total Trade: {total_trades}\n"
+                    f"Modal: {fmt(modal)}"
+                )
             else:
-                log(f"⚠️ Gagal jual: {result}")
+                log(f"⚠️ Gagal jual {label}: {result}")
                 send_telegram(f"⚠️ Gagal JUAL {label}\n{result}")
 
         # Stop loss
         elif pl_pct <= -STOP_LOSS:
-            result = place_sell(pair_id, curr, qty)
+            result = place_sell(pair_id, curr)
             if result and result.get("success") == 1:
                 modal        += idr_in + pl
                 total_profit += pl
-                daily_profit += pl
                 total_trades += 1
-                open_position = None
+                del open_positions[pair_id]
                 log(f"🛑 STOP LOSS {label} | Loss: {fmt(pl)}")
-                send_telegram(f"🛑 *STOP LOSS {label}*\nHarga: {fmt(curr)}\nLoss: {fmt(pl)}\nModal: {fmt(modal)}")
+                send_telegram(
+                    f"🛑 *STOP LOSS {label}*\n"
+                    f"Harga: {fmt(curr)}\n"
+                    f"Loss: {fmt(pl)}\n"
+                    f"Modal: {fmt(modal)}"
+                )
             else:
-                log(f"⚠️ Gagal stop loss: {result}")
-        return True
+                log(f"⚠️ Gagal stop loss {label}: {result}")
 
-    # Cari peluang beli
-    pair_id = choose_best_pair()
-    if not pair_id:
-        log(f"⏳ Scan top {TOP_N_PAIRS} pair — menunggu {MIN_SIGNALS}/6 sinyal...")
-        return True
+    # Buka posisi baru kalau slot masih ada
+    slots_available = MAX_TRADES - len(open_positions)
+    if slots_available <= 0:
+        log(f"📊 {len(open_positions)}/{MAX_TRADES} posisi penuh — menunggu...")
+        return
 
-    count, reasons = check_signals(pair_id)
-    price  = prices.get(pair_id, 0)
-    label  = pair_labels.get(pair_id, pair_id)
-    reason = f"[{count}/6] " + " | ".join(reasons)
-    idr_in = modal * 0.85
-    qty    = idr_in / price
+    candidates = choose_best_pairs()
+    if not candidates:
+        log(f"⏳ Scan top {TOP_N_PAIRS} pair — menunggu {MIN_SIGNALS}/6 sinyal... ({len(open_positions)}/{MAX_TRADES} posisi)")
+        return
 
-    result = place_buy(pair_id, price, idr_in)
-    if result and result.get("success") == 1:
-        modal -= idr_in
-        total_trades += 1
-        open_position = {"pair": pair_id, "buy_price": price, "qty": qty, "idr": idr_in}
-        log(f"🛒 BELI {label} | {fmt(price)} | {qty:.6f} unit | {reason}")
-        send_telegram(f"🛒 *BELI {label}*\nHarga: {fmt(price)}\nUnit: {qty:.6f}\nModal: {fmt(idr_in)}\nSinyal: {reason}")
-    else:
-        log(f"⚠️ Gagal beli {label}: {result}")
-        send_telegram(f"⚠️ Gagal BELI {label}\n{result}")
+    # Buka posisi baru sesuai slot tersedia
+    idr_per_trade = (modal * 0.95) / MAX_TRADES
 
-    return True
+    for pair_id, count, reasons in candidates[:slots_available]:
+        price  = prices.get(pair_id, 0)
+        label  = pair_labels.get(pair_id, pair_id)
+        reason = f"[{count}/6] " + " | ".join(reasons)
+        qty    = idr_per_trade / price
+
+        result = place_buy(pair_id, price, idr_per_trade)
+        if result and result.get("success") == 1:
+            modal -= idr_per_trade
+            total_trades += 1
+            open_positions[pair_id] = {
+                "buy_price": price,
+                "qty":       qty,
+                "idr":       idr_per_trade
+            }
+            log(f"🛒 BELI {label} | {fmt(price)} | {qty:.6f} unit | {reason}")
+            send_telegram(
+                f"🛒 *BELI {label}*\n"
+                f"Harga: {fmt(price)}\n"
+                f"Unit: {qty:.6f}\n"
+                f"Modal/trade: {fmt(idr_per_trade)}\n"
+                f"Sinyal: {reason}\n"
+                f"Posisi: {len(open_positions)}/{MAX_TRADES}"
+            )
+            time.sleep(2)
+        else:
+            log(f"⚠️ Gagal beli {label}: {result}")
+            send_telegram(f"⚠️ Gagal BELI {label}\n{result}")
 
 # ── Main ───────────────────────────────────────────────
 def main():
-    global modal, daily_profit
-    log("🚀 IndoBot v3 dimulai...")
+    log("🚀 IndoBot v4 dimulai...")
 
     while not test_api():
         log("⏳ Retry test API dalam 30 detik...")
@@ -393,27 +380,29 @@ def main():
         time.sleep(30)
 
     send_telegram(
-        f"🚀 *IndoBot v3 AKTIF*\n"
+        f"🚀 *IndoBot v4 AKTIF*\n"
         f"Modal: {fmt(MODAL)}\n"
-        f"Target: {fmt(TARGET)}\n"
+        f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Stop Loss: {STOP_LOSS}%\n"
+        f"Max Posisi: {MAX_TRADES} coin sekaligus\n"
         f"Scan: Top {TOP_N_PAIRS} pair volume tertinggi\n"
         f"Min sinyal: {MIN_SIGNALS}/6\n"
-        f"Indikator: RSI + SMA + MACD + BB + EMA + Volume"
+        f"Mode: Non-stop seumur hidup! 🔄\n"
+        f"Indikator: RSI+SMA+MACD+BB+EMA+Volume"
     )
-    log(f"✅ Bot v3 aktif | {len(all_pairs)} pair | Min {MIN_SIGNALS}/6 sinyal")
+    log(f"✅ Bot v4 aktif | {len(all_pairs)} pair | {MAX_TRADES} posisi sekaligus")
 
     while True:
         try:
             fetch_prices()
-            running = bot_tick()
-            if not running:
-                daily_profit = 0
-                log("🔄 Reset — lanjut besok...")
-                time.sleep(3600)
+            bot_tick()
             time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
-            send_telegram(f"🔴 *IndoBot STOP*\nProfit: {fmt(total_profit)}\nTrade: {total_trades}")
+            send_telegram(
+                f"🔴 *IndoBot STOP*\n"
+                f"Total Profit: {fmt(total_profit)}\n"
+                f"Total Trade: {total_trades}"
+            )
             break
         except Exception as e:
             log(f"⚠️ Error: {e}")
