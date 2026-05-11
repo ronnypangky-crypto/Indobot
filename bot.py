@@ -13,6 +13,7 @@ TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "2000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.0"))     # trailing stop 1%
+HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))     # hard stop loss -5%
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000")) # max Rp 2jt
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "6"))        # 6 posisi sekaligus
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "20"))      # top 20 pair
@@ -439,7 +440,23 @@ def bot_tick():
             else:
                 log(f"⏳ {label} profit {fmt(pl)} — trailing aktif, tunggu peak...")
 
-        # Trailing stop loss — kalau belum profit tapi turun dari peak
+        # Hard stop loss -5% dari harga beli → PASTI jual!
+        elif pl_pct <= -HARD_STOP:
+            result = place_sell(pair_id, curr)
+            if result and result.get("success") == 1:
+                modal        = get_idr_balance()
+                total_profit += pl
+                total_trades += 1
+                del open_positions[pair_id]
+                log(f"🚨 HARD STOP {label} | Loss:{fmt(pl)} ({pl_pct:.2f}%)")
+                send_telegram(
+                    f"🚨 *HARD STOP LOSS {label}*\n"
+                    f"Harga: {fmt(curr)}\n"
+                    f"Loss: {fmt(pl)} ({pl_pct:.2f}%)\n"
+                    f"Modal: {fmt(modal)}"
+                )
+
+        # Trailing stop loss
         elif trail_drop >= TRAIL_PCT and pl_pct <= -1:
             result = place_sell(pair_id, curr)
             if result and result.get("success") == 1:
@@ -519,6 +536,7 @@ def main():
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
         f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
+        f"Hard Stop Loss: {HARD_STOP}%\n"
         f"Max Posisi: {MAX_TRADES} coin sekaligus\n"
         f"Scan: Top {TOP_N_PAIRS} pair volume tertinggi\n"
         f"Min sinyal: {MIN_SIGNALS}/12\n"
