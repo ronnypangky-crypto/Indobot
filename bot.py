@@ -95,7 +95,21 @@ def get_idr_balance():
         return min(idr, MAX_MODAL)
     return 0
 
-def get_coin_balance(coin):
+# ── Mapping nama coin yang tidak standar ──────────────
+COIN_MAP = {
+    "trollsol_idr": "trollsol",
+    "jellyjelly_idr": "jellyjelly",
+    "whitewhale_idr": "whitewhale",
+    "fartcoin_idr": "fartcoin",
+    "solayer_idr": "solayer",
+    "zerebro_idr": "zerebro",
+    "useless_idr": "useless",
+}
+
+def get_coin_name(pair_id):
+    if pair_id in COIN_MAP:
+        return COIN_MAP[pair_id]
+    return pair_id.replace("_idr", "")
     result = indodax_request("getInfo")
     if result and result.get("success") == 1:
         return float(result["return"]["balance"].get(coin, 0))
@@ -370,7 +384,7 @@ def place_buy(pair_id, price, idr_amount):
     })
 
 def place_sell(pair_id, price):
-    coin       = pair_id.replace("_idr", "")
+    coin       = get_coin_name(pair_id)
     actual_qty = get_coin_balance(coin)
 
     # Kalau saldo 0 tapi posisi masih di memori → hapus posisi
