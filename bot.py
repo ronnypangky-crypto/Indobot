@@ -116,10 +116,6 @@ def get_coin_name(pair_id):
     if pair_id in COIN_MAP:
         return COIN_MAP[pair_id]
     return pair_id.replace("_idr", "")
-    result = indodax_request("getInfo")
-    if result and result.get("success") == 1:
-        return float(result["return"]["balance"].get(coin, 0))
-    return 0
 
 # ── Test API ───────────────────────────────────────────
 def test_api():
