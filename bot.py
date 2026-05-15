@@ -95,6 +95,12 @@ def get_idr_balance():
         return min(idr, MAX_MODAL)
     return 0
 
+def get_coin_balance(coin):
+    result = indodax_request("getInfo")
+    if result and result.get("success") == 1:
+        return float(result["return"]["balance"].get(coin, 0))
+    return 0
+
 # ── Mapping nama coin yang tidak standar ──────────────
 COIN_MAP = {
     "trollsol_idr": "trollsol",
