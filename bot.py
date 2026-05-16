@@ -12,16 +12,16 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "1000"))
-TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.0"))
-HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
+TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.5"))     # trailing stop 1.5%
+HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))     # hard stop loss 5%
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "6"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "20"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "10"))
-MIN_PRICE    = float(os.environ.get("MIN_PRICE", "0"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "48"))
-UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "60"))   # 60% coin naik
-SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))        # max retry jual
+UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
+SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
+VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))     # volume spike 3x normal
 SCAN_INTERVAL = 60
 
 INDODAX_TAPI = "https://indodax.com/tapi"
@@ -30,7 +30,7 @@ INDODAX_TAPI = "https://indodax.com/tapi"
 modal          = 0.0
 total_profit   = 0.0
 total_trades   = 0
-open_positions = {}   # {pair_id: {buy_price, qty, idr, peak_price, sell_attempts, last_sell_time}}
+open_positions = {}
 price_history  = {}
 volume_history = {}
 all_pairs      = []
@@ -57,7 +57,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v5*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v6*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -87,7 +87,7 @@ def indodax_request(method, params=None):
         log(f"API Error [{method}]: {e}")
         return None
 
-# ── Get balance ────────────────────────────────────────
+# ── Balance ────────────────────────────────────────────
 def get_idr_balance():
     result = indodax_request("getInfo")
     if result and result.get("success") == 1:
@@ -101,15 +101,18 @@ def get_coin_balance(coin):
         return float(result["return"]["balance"].get(coin, 0))
     return 0
 
-# ── Mapping nama coin yang tidak standar ──────────────
+# ── Coin name mapping ──────────────────────────────────
 COIN_MAP = {
-    "trollsol_idr": "trollsol",
+    "trollsol_idr":   "trollsol",
     "jellyjelly_idr": "jellyjelly",
     "whitewhale_idr": "whitewhale",
-    "fartcoin_idr": "fartcoin",
-    "solayer_idr": "solayer",
-    "zerebro_idr": "zerebro",
-    "useless_idr": "useless",
+    "fartcoin_idr":   "fartcoin",
+    "solayer_idr":    "solayer",
+    "zerebro_idr":    "zerebro",
+    "useless_idr":    "useless",
+    "sundog_idr":     "sundog",
+    "pippin_idr":     "pippin",
+    "siren_idr":      "siren",
 }
 
 def get_coin_name(pair_id):
@@ -126,12 +129,11 @@ def test_api():
         idr   = float(result["return"]["balance"].get("idr", 0))
         modal = min(idr, MAX_MODAL)
         log(f"✅ API OK! Saldo IDR: {fmt(idr)} | Modal bot: {fmt(modal)}")
-        send_telegram(f"✅ *API Indodax Konek!*\nSaldo IDR: {fmt(idr)}\nModal bot: {fmt(modal)}\nMax modal: {fmt(MAX_MODAL)}")
+        send_telegram(f"✅ *API Indodax Konek!*\nSaldo IDR: {fmt(idr)}\nModal bot: {fmt(modal)}")
         return True
-    else:
-        log(f"❌ API gagal: {result}")
-        send_telegram(f"❌ *API Gagal!*\nResponse: {result}")
-        return False
+    log(f"❌ API gagal: {result}")
+    send_telegram(f"❌ *API Gagal!*")
+    return False
 
 # ── Blacklist ──────────────────────────────────────────
 def add_blacklist(pair_id, loss):
@@ -139,18 +141,15 @@ def add_blacklist(pair_id, loss):
     blacklist[pair_id] = time.time()
     daily_loss += abs(loss)
     label = pair_labels.get(pair_id, pair_id)
-    log(f"🚫 Blacklist {label} selama {BLACKLIST_HR} jam")
+    log(f"🚫 Blacklist {label} {BLACKLIST_HR} jam")
     send_telegram(f"🚫 *Blacklist {label}*\nSkip {BLACKLIST_HR} jam\nLoss hari ini: {fmt(daily_loss)}")
 
 def is_blacklisted(pair_id):
     if pair_id not in blacklist:
         return False
-    elapsed = time.time() - blacklist[pair_id]
-    if elapsed > BLACKLIST_HR * 3600:
+    if time.time() - blacklist[pair_id] > BLACKLIST_HR * 3600:
         del blacklist[pair_id]
-        log(f"✅ {pair_labels.get(pair_id, pair_id)} dihapus dari blacklist")
         return False
-    sisa = int((BLACKLIST_HR * 3600 - elapsed) / 3600)
     return True
 
 def reset_daily():
@@ -159,7 +158,7 @@ def reset_daily():
         daily_loss  = 0.0
         daily_start = time.time()
         log("🔄 Reset harian")
-        send_telegram("🔄 *Reset Harian*\nDaily loss dikosongkan!")
+        send_telegram("🔄 *Reset Harian* — Daily loss dikosongkan!")
 
 # ── Market trend ───────────────────────────────────────
 def check_market_trend():
@@ -183,9 +182,9 @@ def check_market_trend():
         if total == 0:
             return True
         pct_naik = naik / total * 100
-        is_uptrend = pct_naik >= UPTREND_PCT
-        log(f"📊 Market: {total} coin | Naik:{naik}({pct_naik:.0f}%) | {'UPTREND ✅' if is_uptrend else 'DOWNTREND ❌'}")
-        return is_uptrend
+        is_up = pct_naik >= UPTREND_PCT
+        log(f"📊 Market: {total} coin | Naik:{naik}({pct_naik:.0f}%) | {'UPTREND ✅' if is_up else 'DOWNTREND ❌'}")
+        return is_up
     except Exception as e:
         log(f"⚠️ Gagal cek market: {e}")
         return True
@@ -277,9 +276,9 @@ def calc_rsi(arr, period=14):
 def calc_macd(arr):
     if len(arr) < 26:
         return 0, 0, 0
-    ema12 = calc_ema(arr, 12)
-    ema26 = calc_ema(arr, 26)
-    macd  = ema12 - ema26
+    ema12  = calc_ema(arr, 12)
+    ema26  = calc_ema(arr, 26)
+    macd   = ema12 - ema26
     signal = macd * 0.9
     return macd, signal, macd - signal
 
@@ -300,9 +299,7 @@ def calc_stoch_rsi(arr, period=14):
     min_rsi = min(rsi_vals[-period:])
     max_rsi = max(rsi_vals[-period:])
     curr    = rsi_vals[-1]
-    if max_rsi == min_rsi:
-        return 50
-    return (curr - min_rsi) / (max_rsi - min_rsi) * 100
+    return (curr - min_rsi) / (max_rsi - min_rsi) * 100 if max_rsi != min_rsi else 50
 
 def calc_cci(arr, period=20):
     if len(arr) < period:
@@ -325,9 +322,10 @@ def calc_roc(arr, period=10):
     return (arr[-1] - arr[-period-1]) / arr[-period-1] * 100
 
 def calc_atr(arr, period=14):
-    if len(arr) < period + 1:
+    if len(arr) < 2:
         return 0
-    return sum(abs(arr[i] - arr[i-1]) for i in range(1, len(arr)))/ (len(arr)-1)
+    trs = [abs(arr[i] - arr[i-1]) for i in range(1, len(arr))]
+    return sum(trs[-period:]) / min(len(trs), period)
 
 def calc_obv(arr, vol_arr):
     if len(arr) < 2 or len(vol_arr) < 2:
@@ -338,6 +336,84 @@ def calc_obv(arr, vol_arr):
         elif arr[i] < arr[i-1]: obv -= vol_arr[i]
     return obv
 
+# ── Predictive signals — deteksi coin AKAN naik ───────
+def check_momentum(pair_id):
+    hist  = price_history.get(pair_id, [])
+    vol_h = volume_history.get(pair_id, [])
+    if len(hist) < 5 or len(vol_h) < 5:
+        return False, ""
+
+    # 1. Volume Spike — volume naik 3x dari rata-rata
+    avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1) if len(vol_h) > 1 else 0
+    curr_vol = vol_h[-1]
+    vol_spike = avg_vol > 0 and curr_vol >= avg_vol * VOL_SPIKE
+
+    # 2. Price momentum — harga naik 3 candle berturut
+    price_up = len(hist) >= 3 and hist[-1] > hist[-2] > hist[-3]
+
+    # 3. MACD hampir crossover (selisih kecil)
+    if len(hist) >= 26:
+        macd, signal, _ = calc_macd(hist)
+        macd_cross = macd > signal * 0.95  # hampir atau sudah crossover
+    else:
+        macd_cross = False
+
+    # 4. Bollinger squeeze — band menyempit (breakout akan terjadi)
+    if len(hist) >= 20:
+        upper, mid, lower = calc_bollinger(hist)
+        band_width = (upper - lower) / mid * 100 if mid > 0 else 100
+        bb_squeeze = band_width < 3.0  # band sangat sempit
+    else:
+        bb_squeeze = False
+
+    # 5. RSI momentum — RSI naik dari oversold
+    rsi = calc_rsi(hist)
+    rsi_momentum = 30 <= rsi <= 50  # naik dari oversold, belum overbought
+
+    signals = []
+    if vol_spike:    signals.append(f"Vol Spike {curr_vol/avg_vol:.1f}x🚀")
+    if price_up:     signals.append("Price Up 3✅")
+    if macd_cross:   signals.append("MACD Cross✅")
+    if bb_squeeze:   signals.append("BB Squeeze✅")
+    if rsi_momentum: signals.append(f"RSI={rsi:.0f}↑✅")
+
+    # Butuh minimal 2 sinyal momentum
+    is_momentum = len(signals) >= 2
+    return is_momentum, " | ".join(signals)
+
+# ── Deteksi indikasi turun — untuk exit lebih cepat ───
+def check_exit_signal(pair_id, buy_price):
+    hist  = price_history.get(pair_id, [])
+    vol_h = volume_history.get(pair_id, [])
+    if len(hist) < 5:
+        return False, ""
+
+    exit_signals = []
+
+    # RSI overbought
+    rsi = calc_rsi(hist)
+    if rsi > 70:
+        exit_signals.append(f"RSI={rsi:.0f} overbought")
+
+    # Volume turun (momentum habis)
+    if len(vol_h) >= 3:
+        if vol_h[-1] < vol_h[-2] < vol_h[-3]:
+            exit_signals.append("Volume turun")
+
+    # MACD berbalik turun
+    if len(hist) >= 26:
+        macd, signal, hist_val = calc_macd(hist)
+        if hist_val < 0:
+            exit_signals.append("MACD turun")
+
+    # Harga turun 2 candle berturut setelah peak
+    if len(hist) >= 3 and hist[-1] < hist[-2] < hist[-3]:
+        exit_signals.append("Harga turun 2x")
+
+    should_exit = len(exit_signals) >= 2
+    return should_exit, " | ".join(exit_signals)
+
+# ── 12 Indikator standar ───────────────────────────────
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -369,10 +445,22 @@ def choose_best_pairs():
     for pair_id in all_pairs:
         if pair_id in open_positions: continue
         if is_blacklisted(pair_id): continue
+
+        # Cek sinyal standar
         count, reasons = check_signals(pair_id)
-        if count < MIN_SIGNALS: continue
-        candidates.append((pair_id, count, reasons))
-    candidates.sort(key=lambda x: x[1], reverse=True)
+
+        # Cek momentum prediktif
+        has_momentum, momentum_desc = check_momentum(pair_id)
+
+        # Masuk kalau sinyal standar cukup ATAU ada momentum kuat
+        if count >= MIN_SIGNALS:
+            candidates.append((pair_id, count, reasons, "standard", ""))
+        elif has_momentum and count >= 6:
+            # Momentum entry — sinyal lebih sedikit tapi ada momentum
+            candidates.append((pair_id, count, reasons, "momentum", momentum_desc))
+
+    # Prioritaskan momentum entry
+    candidates.sort(key=lambda x: (x[3] == "momentum", x[1]), reverse=True)
     return candidates
 
 # ── Order ──────────────────────────────────────────────
@@ -388,12 +476,9 @@ def place_buy(pair_id, price, idr_amount):
 def place_sell(pair_id, price):
     coin       = get_coin_name(pair_id)
     actual_qty = get_coin_balance(coin)
-
-    # Kalau saldo 0 tapi posisi masih di memori → hapus posisi
     if actual_qty <= 0:
-        log(f"⚠️ Saldo {coin} = 0, hapus posisi dari memori")
+        log(f"⚠️ Saldo {coin} = 0, hapus posisi")
         return {"success": 1, "zero_balance": True}
-
     log(f"📤 SELL {pair_id} | {coin}:{actual_qty:.8f}")
     return indodax_request("trade", {
         "pair":  pair_id,
@@ -409,7 +494,6 @@ def bot_tick():
     reset_daily()
     modal = get_idr_balance()
 
-    # Cek semua posisi terbuka
     for pair_id in list(open_positions.keys()):
         pos       = open_positions[pair_id]
         buy_price = pos["buy_price"]
@@ -420,7 +504,7 @@ def bot_tick():
         pl        = (curr - buy_price) * qty
         pl_pct    = (curr - buy_price) / buy_price * 100
 
-        # Update peak price
+        # Update peak
         if curr > pos["peak_price"]:
             open_positions[pair_id]["peak_price"] = curr
 
@@ -432,48 +516,49 @@ def bot_tick():
         should_sell = False
         sell_reason = ""
 
+        # Cek indikasi turun untuk exit lebih cepat
+        has_exit, exit_desc = check_exit_signal(pair_id, buy_price)
+
         # Take profit + trailing
         if pl >= TAKE_PROFIT and trail_drop >= TRAIL_PCT:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | Trailing {trail_drop:.1f}%"
+
+        # Exit cepat kalau ada indikasi turun + sudah profit
+        elif pl > 0 and has_exit:
+            should_sell = True
+            sell_reason = f"📉 Exit sinyal turun: {exit_desc} | P/L:{fmt(pl)}"
 
         # Hard stop loss
         elif pl_pct <= -HARD_STOP:
             should_sell = True
             sell_reason = f"🚨 Hard Stop Loss {pl_pct:.2f}%"
 
-        # Trailing stop (belum profit tapi turun dari peak)
+        # Trailing stop
         elif trail_drop >= TRAIL_PCT and pl_pct <= -1:
             should_sell = True
             sell_reason = f"🛑 Trailing Stop {trail_drop:.1f}%"
 
         if should_sell:
-            # Cek waktu retry — jangan spam setiap detik
             last_sell = pos.get("last_sell_time", 0)
             attempts  = pos.get("sell_attempts", 0)
 
             if attempts >= SELL_RETRY:
-                log(f"⚠️ {label} gagal jual {attempts}x — jual manual di Indodax!")
+                log(f"⚠️ {label} gagal jual {attempts}x — jual manual!")
                 send_telegram(f"⚠️ *{label} gagal jual {attempts}x!*\nSilakan jual manual di Indodax!")
                 del open_positions[pair_id]
                 continue
 
-            if time.time() - last_sell < 300 and attempts > 0:  # tunggu 5 menit sebelum retry
-                log(f"⏳ {label} tunggu 5 menit sebelum retry jual...")
+            if time.time() - last_sell < 300 and attempts > 0:
                 continue
 
             result = place_sell(pair_id, curr)
-
             if result and result.get("success") == 1:
-                is_zero = result.get("zero_balance", False)
                 modal        = get_idr_balance()
                 total_profit += pl
                 total_trades += 1
                 del open_positions[pair_id]
-
-                if is_zero:
-                    log(f"🔄 {label} posisi dibersihkan (saldo 0)")
-                else:
+                if not result.get("zero_balance"):
                     log(f"{sell_reason} | {label} | P/L:{fmt(pl)}")
                     send_telegram(
                         f"{sell_reason}\n*{label}*\n"
@@ -487,7 +572,7 @@ def bot_tick():
             else:
                 open_positions[pair_id]["sell_attempts"] = attempts + 1
                 open_positions[pair_id]["last_sell_time"] = time.time()
-                log(f"⚠️ Gagal jual {label} (attempt {attempts+1}/{SELL_RETRY}): {result}")
+                log(f"⚠️ Gagal jual {label} (attempt {attempts+1}/{SELL_RETRY})")
 
     # Buka posisi baru
     slots = MAX_TRADES - len(open_positions)
@@ -501,32 +586,38 @@ def bot_tick():
 
     candidates = choose_best_pairs()
     if not candidates:
-        log(f"⏳ Scan {TOP_N_PAIRS} pair — menunggu {MIN_SIGNALS}/12 sinyal... ({len(open_positions)}/{MAX_TRADES} posisi)")
+        log(f"⏳ Scan {TOP_N_PAIRS} pair — menunggu sinyal... ({len(open_positions)}/{MAX_TRADES} posisi)")
         return
 
     idr_per_trade = (modal * 0.95) / MAX_TRADES
 
-    for pair_id, count, reasons in candidates[:slots]:
+    for pair_id, count, reasons, entry_type, momentum_desc in candidates[:slots]:
         if idr_per_trade < 10000:
             log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
             break
 
         price  = prices.get(pair_id, 0)
         label  = pair_labels.get(pair_id, pair_id)
-        reason = f"[{count}/12] " + " | ".join(reasons)
-        qty    = idr_per_trade / price
+
+        if entry_type == "momentum":
+            reason = f"🚀 MOMENTUM [{count}/12] {momentum_desc}"
+        else:
+            reason = f"[{count}/12] " + " | ".join(reasons)
+
+        qty = idr_per_trade / price
 
         result = place_buy(pair_id, price, idr_per_trade)
         if result and result.get("success") == 1:
             modal = get_idr_balance()
             total_trades += 1
             open_positions[pair_id] = {
-                "buy_price":    price,
-                "qty":          qty,
-                "idr":          idr_per_trade,
-                "peak_price":   price,
+                "buy_price":     price,
+                "qty":           qty,
+                "idr":           idr_per_trade,
+                "peak_price":    price,
                 "sell_attempts": 0,
-                "last_sell_time": 0
+                "last_sell_time": 0,
+                "entry_type":    entry_type
             }
             log(f"🛒 BELI {label} | {fmt(price)} | {qty:.6f} unit | {reason}")
             send_telegram(
@@ -534,7 +625,7 @@ def bot_tick():
                 f"Harga: {fmt(price)}\n"
                 f"Unit: {qty:.6f}\n"
                 f"Modal/trade: {fmt(idr_per_trade)}\n"
-                f"Sinyal: {reason}\n"
+                f"Entry: {reason}\n"
                 f"Posisi: {len(open_positions)}/{MAX_TRADES}"
             )
             time.sleep(2)
@@ -543,7 +634,7 @@ def bot_tick():
 
 # ── Main ───────────────────────────────────────────────
 def main():
-    log("🚀 IndoBot v5 dimulai...")
+    log("🚀 IndoBot v6 dimulai...")
 
     while not test_api():
         log("⏳ Retry API..."); time.sleep(30)
@@ -552,7 +643,7 @@ def main():
         log("⏳ Retry load pair..."); time.sleep(30)
 
     send_telegram(
-        f"🚀 *IndoBot v5 AKTIF*\n"
+        f"🚀 *IndoBot v6 AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
         f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
@@ -561,8 +652,9 @@ def main():
         f"Scan: Top {TOP_N_PAIRS} pair volume tertinggi\n"
         f"Min sinyal: {MIN_SIGNALS}/12\n"
         f"Uptrend: {UPTREND_PCT}% coin naik\n"
-        f"Blacklist: {BLACKLIST_HR} jam setelah cut loss\n"
-        f"Fix: Sell retry max {SELL_RETRY}x, tunggu 5 menit\n"
+        f"Blacklist: {BLACKLIST_HR} jam\n"
+        f"🆕 Predictive Entry: Volume Spike {VOL_SPIKE}x\n"
+        f"🆕 Exit otomatis saat indikasi turun\n"
         f"Mode: Non-stop seumur hidup! 🔄"
     )
 
