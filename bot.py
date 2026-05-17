@@ -95,16 +95,51 @@ def get_idr_balance():
         return min(idr, MAX_MODAL)
     return 0
 
-def get_coin_balance(coin):
-    """Ambil saldo coin aktual dari Indodax"""
+def get_all_balances():
+    """Ambil semua balance dari Indodax"""
     result = indodax_request("getInfo")
     if result and result.get("success") == 1:
-        bal = result["return"]["balance"]
-        # Coba berbagai format nama coin
-        for key in [coin, coin.lower(), coin.upper()]:
-            if key in bal:
-                return float(bal[key])
-    return 0
+        return result["return"]["balance"]
+    return {}
+
+def get_coin_balance(coin):
+    """Ambil saldo coin aktual dari Indodax"""
+    balances = get_all_balances()
+    # Coba berbagai format
+    for key in [coin, coin.lower(), coin.upper()]:
+        if key in balances:
+            val = float(balances[key])
+            if val > 0:
+                return val, key  # return nilai dan nama key yang benar
+    return 0, coin
+
+def find_coin_key(pair_id):
+    """
+    Auto-detect nama coin yang benar dari balance Indodax
+    Cocokkan berdasarkan pair_id
+    """
+    # Coba dari COIN_MAP dulu
+    mapped = get_coin_name(pair_id)
+
+    balances = get_all_balances()
+
+    # Coba nama dari map
+    candidates = [
+        mapped,
+        mapped.lower(),
+        mapped.upper(),
+        pair_id.replace("_idr", ""),
+        pair_id.replace("_idr", "").lower(),
+        pair_id.replace("_idr", "").upper(),
+    ]
+
+    for name in candidates:
+        if name in balances and float(balances[name]) > 0:
+            log(f"✅ Found coin key: {name} (balance: {balances[name]})")
+            return name, float(balances[name])
+
+    log(f"⚠️ Coin not found in balance for {pair_id}. Available: {[k for k,v in balances.items() if float(v or 0) > 0]}")
+    return mapped, 0
 
 # ── Coin name mapping — lengkap semua pair ─────────────
 COIN_MAP = {
@@ -512,25 +547,24 @@ def place_buy(pair_id, price, idr_amount):
 def place_sell(pair_id, price, qty_to_sell):
     """
     Jual HANYA qty yang bot beli — tidak ganggu coin lain di wallet!
-    qty_to_sell = qty yang bot catat saat beli
+    Auto-detect nama coin yang benar dari balance Indodax
     """
-    coin = get_coin_name(pair_id)
+    # Auto-detect nama coin dan saldo aktual
+    coin_key, actual_qty = find_coin_key(pair_id)
 
-    # Cek saldo aktual
-    actual_qty = get_coin_balance(coin)
     if actual_qty <= 0:
-        log(f"⚠️ Saldo {coin} = 0, hapus posisi")
+        log(f"⚠️ Saldo {coin_key} = 0, hapus posisi")
         return {"success": 1, "zero_balance": True}
 
-    # Jual hanya sebanyak yang bot beli (atau saldo aktual kalau lebih kecil)
+    # Jual hanya sebanyak yang bot beli
     sell_qty = min(qty_to_sell, actual_qty)
-    log(f"📤 SELL {pair_id} | {coin}:{sell_qty:.8f} (bot beli:{qty_to_sell:.8f} | wallet:{actual_qty:.8f})")
+    log(f"📤 SELL {pair_id} | coin_key:{coin_key} | qty:{sell_qty:.8f} (bot:{qty_to_sell:.8f} | wallet:{actual_qty:.8f})")
 
     return indodax_request("trade", {
-        "pair":  pair_id,
-        "type":  "sell",
-        "price": str(int(price * 0.99)),
-        coin:    f"{sell_qty:.8f}",
+        "pair":    pair_id,
+        "type":    "sell",
+        "price":   str(int(price * 0.99)),
+        coin_key:  f"{sell_qty:.8f}",
     })
 
 # ── Bot Logic ──────────────────────────────────────────
