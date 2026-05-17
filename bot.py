@@ -204,7 +204,24 @@ COIN_MAP = {
     "usdc_idr":        "usdc",
 }
 
-def get_coin_name(pair_id):
+def format_qty(coin_key, qty):
+    """
+    Format qty sesuai kebutuhan coin
+    Beberapa coin Indodax tidak support decimal → harus integer
+    """
+    # Coin yang harus integer (tidak boleh decimal)
+    integer_coins = {
+        "trollsol", "jellyjelly", "pippin", "whitewhale",
+        "fartcoin", "sundog", "zerebro", "siren", "pepe",
+        "shib", "floki", "babydoge", "bonk", "myro",
+        "popcat", "neiro", "turbo", "moodeng", "pnut",
+        "pengu", "useless", "doge", "anoa", "hart",
+        "aura", "giga", "mew", "looks", "buildon"
+    }
+    coin_lower = coin_key.lower()
+    if coin_lower in integer_coins:
+        return str(int(qty))  # bulatkan ke bawah
+    return f"{qty:.8f}"  # pakai 8 decimal untuk coin lain
     """Dapatkan nama coin yang benar untuk API Indodax"""
     if pair_id in COIN_MAP:
         return COIN_MAP[pair_id]
@@ -558,13 +575,14 @@ def place_sell(pair_id, price, qty_to_sell):
 
     # Jual hanya sebanyak yang bot beli
     sell_qty = min(qty_to_sell, actual_qty)
-    log(f"📤 SELL {pair_id} | coin_key:{coin_key} | qty:{sell_qty:.8f} (bot:{qty_to_sell:.8f} | wallet:{actual_qty:.8f})")
+    qty_str  = format_qty(coin_key, sell_qty)
+    log(f"📤 SELL {pair_id} | coin_key:{coin_key} | qty:{qty_str} (bot:{qty_to_sell:.8f} | wallet:{actual_qty:.8f})")
 
     return indodax_request("trade", {
         "pair":    pair_id,
         "type":    "sell",
         "price":   str(int(price * 0.99)),
-        coin_key:  f"{sell_qty:.8f}",
+        coin_key:  qty_str,
     })
 
 # ── Bot Logic ──────────────────────────────────────────
