@@ -4,6 +4,7 @@ import hmac
 import hashlib
 import requests
 import urllib.parse
+import json
 from datetime import datetime
 
 # ── Konfigurasi ────────────────────────────────────────
@@ -11,13 +12,15 @@ API_KEY      = os.environ.get("INDODAX_API_KEY", "")
 SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
+CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")   # optional, untuk AI analisa
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "1000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.5"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "20"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "50"))   # scan 50 pair
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "10"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))  # AI harus yakin >= 70%
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "48"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
@@ -57,7 +60,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v6*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v8*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -67,7 +70,7 @@ def send_telegram(msg):
     except Exception as e:
         log(f"TG Error: {e}")
 
-# ── Indodax Private API ────────────────────────────────
+# ── Indodax API ────────────────────────────────────────
 def indodax_request(method, params=None):
     if params is None:
         params = {}
@@ -104,7 +107,6 @@ def get_all_balances():
     return {}
 
 def get_coin_balance(coin):
-    """Return (qty, coin_key) — qty aktual dan nama key yang benar"""
     balances = get_all_balances()
     for key in [coin, coin.lower(), coin.upper()]:
         if key in balances:
@@ -120,7 +122,7 @@ INTEGER_COINS = {
     "babydoge", "bonk", "myro", "popcat", "neiro", "turbo",
     "moodeng", "pnut", "pengu", "useless", "doge", "anoa",
     "hart", "aura", "giga", "mew", "looks", "buildon",
-    "strm", "ai", "pols", "degen", "islm", "trx",
+    "strm", "pols", "degen", "islm", "trx", "molt", "ub",
 }
 
 def format_qty(coin, qty):
@@ -141,12 +143,13 @@ def test_api():
             f"✅ *API Indodax Konek!*\n"
             f"Saldo IDR: {fmt(idr)}\n"
             f"Modal bot: {fmt(modal)}\n"
-            f"Max modal: {fmt(MAX_MODAL)}\n"
-            f"⚠️ Bot HANYA jual coin yang dia beli sendiri!"
+            f"AI analisa: {'✅ Aktif' if CLAUDE_KEY else '🧠 Internal AI'}\n"
+            f"Min sinyal: {MIN_SIGNALS}/17\n"
+            f"AI min score: {AI_MIN_SCORE}%"
         )
         return True
-    log(f"❌ API gagal: {result}")
-    send_telegram(f"❌ *API Gagal!*\nResponse: {result}")
+    log(f"❌ API gagal!")
+    send_telegram(f"❌ *API Gagal!*")
     return False
 
 # ── Blacklist ──────────────────────────────────────────
@@ -163,7 +166,6 @@ def is_blacklisted(pair_id):
         return False
     if time.time() - blacklist[pair_id] > BLACKLIST_HR * 3600:
         del blacklist[pair_id]
-        log(f"✅ {pair_labels.get(pair_id, pair_id)} keluar blacklist")
         return False
     return True
 
@@ -232,8 +234,8 @@ def fetch_all_pairs():
                 price_history[key] = []
             price_history[key].append(last)
         names = [pair_labels[p] for p in all_pairs]
-        log(f"📡 Top {TOP_N_PAIRS} pair: {', '.join(names)}")
-        send_telegram(f"📡 *Top {TOP_N_PAIRS} Pair:*\n{', '.join(names)}")
+        log(f"📡 {len(all_pairs)} pair dimuat")
+        send_telegram(f"📡 *{len(all_pairs)} Pair Dimuat*\nTop: {', '.join(names[:10])}...")
         return True
     except Exception as e:
         log(f"⚠️ Gagal load pair: {e}")
@@ -351,35 +353,319 @@ def calc_obv(arr, vol_arr):
         elif arr[i] < arr[i-1]: obv -= vol_arr[i]
     return obv
 
-# ── 12 Indikator ───────────────────────────────────────
+# ── NEW: Alligator (Williams) ──────────────────────────
+def calc_alligator(arr):
+    """
+    Alligator = 3 SMA dengan periode berbeda:
+    Jaw (biru)   = SMA 13, geser 8 bar
+    Teeth (merah) = SMA 8, geser 5 bar
+    Lips (hijau)  = SMA 5, geser 3 bar
+    Bullish kalau lips > teeth > jaw
+    """
+    if len(arr) < 13:
+        return False, ""
+    jaw   = calc_sma(arr[:-8]  if len(arr) > 8  else arr, 13)
+    teeth = calc_sma(arr[:-5]  if len(arr) > 5  else arr, 8)
+    lips  = calc_sma(arr[:-3]  if len(arr) > 3  else arr, 5)
+    bullish = lips > teeth > jaw
+    return bullish, f"Alligator: L={lips:.0f}>T={teeth:.0f}>J={jaw:.0f}"
+
+# ── NEW: Parabolic SAR ─────────────────────────────────
+def calc_parabolic_sar(arr, af_start=0.02, af_max=0.2):
+    """Parabolic SAR — trend following"""
+    if len(arr) < 10:
+        return False, ""
+    # Simplified SAR
+    rising = arr[-1] > arr[-5]
+    sar    = min(arr[-5:]) if rising else max(arr[-5:])
+    bullish = rising and arr[-1] > sar
+    return bullish, f"PSAR={'↑' if bullish else '↓'}"
+
+# ── NEW: ADX (Average Directional Index) ──────────────
+def calc_adx(arr, period=14):
+    """ADX mengukur kekuatan trend"""
+    if len(arr) < period + 1:
+        return 0, False
+    # Simplified ADX
+    moves = [abs(arr[i] - arr[i-1]) for i in range(1, len(arr))]
+    avg_move = sum(moves[-period:]) / period
+    total_range = max(arr[-period:]) - min(arr[-period:])
+    adx = (avg_move / total_range * 100) if total_range > 0 else 0
+    strong_trend = adx > 25
+    return adx, strong_trend
+
+# ── NEW: Momentum ──────────────────────────────────────
+def calc_momentum(arr, period=10):
+    """Momentum = harga sekarang - harga N periode lalu"""
+    if len(arr) < period + 1:
+        return 0
+    return arr[-1] - arr[-period-1]
+
+# ── NEW: VWAP (Volume Weighted Average Price) ──────────
+def calc_vwap(arr, vol_arr):
+    """VWAP — harga rata-rata berbobot volume"""
+    if len(arr) < 5 or len(vol_arr) < 5:
+        return arr[-1] if arr else 0
+    n = min(len(arr), len(vol_arr), 20)
+    prices_slice = arr[-n:]
+    vols_slice   = vol_arr[-n:]
+    total_vol    = sum(vols_slice)
+    if total_vol == 0:
+        return arr[-1]
+    return sum(p * v for p, v in zip(prices_slice, vols_slice)) / total_vol
+
+# ── 17 Indikator lengkap ───────────────────────────────
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
     if len(hist) < 30:
-        return 0, []
+        return 0, [], {}
+
     price = prices.get(pair_id, 0)
     count, reasons = 0, []
+    details = {}
+
+    # 1. RSI
     rsi = calc_rsi(hist)
+    details["rsi"] = rsi
     if rsi < 40: count += 1; reasons.append(f"RSI={rsi:.0f}✅")
+
+    # 2. SMA crossover
     sma5 = calc_sma(hist, 5); sma20 = calc_sma(hist, 20)
+    details["sma5"] = sma5; details["sma20"] = sma20
     if sma5 > sma20: count += 1; reasons.append("SMA↑✅")
-    macd, signal, _ = calc_macd(hist)
+
+    # 3. MACD
+    macd, signal, hist_val = calc_macd(hist)
+    details["macd"] = macd; details["macd_signal"] = signal
     if macd > signal: count += 1; reasons.append("MACD↑✅")
+
+    # 4. Bollinger Bands
     upper, mid, lower = calc_bollinger(hist)
+    details["bb_lower"] = lower; details["bb_upper"] = upper
     if price <= lower * 1.01: count += 1; reasons.append("BB✅")
+
+    # 5. EMA crossover
     ema9 = calc_ema(hist, 9); ema21 = calc_ema(hist, 21)
+    details["ema9"] = ema9; details["ema21"] = ema21
     if ema9 > ema21: count += 1; reasons.append("EMA↑✅")
-    if len(vol_h) >= 5 and vol_h[-1] > (sum(vol_h[:-1])/(len(vol_h)-1)) * 1.2: count += 1; reasons.append("Vol↑✅")
-    if calc_stoch_rsi(hist) < 20: count += 1; reasons.append("StochRSI✅")
-    if calc_cci(hist) < -100: count += 1; reasons.append("CCI✅")
-    if calc_williams_r(hist) < -80: count += 1; reasons.append("WR✅")
-    if calc_roc(hist) > 0: count += 1; reasons.append("ROC↑✅")
-    if calc_atr(hist) > price * 0.005: count += 1; reasons.append("ATR✅")
-    if calc_obv(hist, vol_h) > 0: count += 1; reasons.append("OBV↑✅")
-    return count, reasons
+
+    # 6. Volume
+    if len(vol_h) >= 5 and vol_h[-1] > (sum(vol_h[:-1])/(len(vol_h)-1)) * 1.2:
+        count += 1; reasons.append("Vol↑✅")
+
+    # 7. Stochastic RSI
+    stoch = calc_stoch_rsi(hist)
+    details["stoch_rsi"] = stoch
+    if stoch < 20: count += 1; reasons.append("StochRSI✅")
+
+    # 8. CCI
+    cci = calc_cci(hist)
+    details["cci"] = cci
+    if cci < -100: count += 1; reasons.append("CCI✅")
+
+    # 9. Williams %R
+    wr = calc_williams_r(hist)
+    details["williams_r"] = wr
+    if wr < -80: count += 1; reasons.append("WR✅")
+
+    # 10. ROC
+    roc = calc_roc(hist)
+    details["roc"] = roc
+    if roc > 0: count += 1; reasons.append("ROC↑✅")
+
+    # 11. ATR
+    atr = calc_atr(hist)
+    details["atr"] = atr
+    if atr > price * 0.005: count += 1; reasons.append("ATR✅")
+
+    # 12. OBV
+    obv = calc_obv(hist, vol_h)
+    details["obv"] = obv
+    if obv > 0: count += 1; reasons.append("OBV↑✅")
+
+    # 13. Alligator
+    alligator_bull, alligator_desc = calc_alligator(hist)
+    details["alligator"] = alligator_bull
+    if alligator_bull: count += 1; reasons.append("Alligator✅")
+
+    # 14. Parabolic SAR
+    psar_bull, psar_desc = calc_parabolic_sar(hist)
+    details["psar"] = psar_bull
+    if psar_bull: count += 1; reasons.append("PSAR✅")
+
+    # 15. ADX
+    adx, strong_trend = calc_adx(hist)
+    details["adx"] = adx
+    if strong_trend: count += 1; reasons.append(f"ADX={adx:.0f}✅")
+
+    # 16. Momentum
+    momentum = calc_momentum(hist)
+    details["momentum"] = momentum
+    if momentum > 0: count += 1; reasons.append("MOM↑✅")
+
+    # 17. VWAP
+    vwap = calc_vwap(hist, vol_h)
+    details["vwap"] = vwap
+    if price < vwap: count += 1; reasons.append("VWAP✅")
+
+    return count, reasons, details
+
+# ── AI Analisa (Internal — Gratis) ────────────────────
+def ai_analyze(pair_id, count, reasons, details):
+    """
+    AI analisa internal berdasarkan semua indikator
+    Memberikan skor keyakinan 0-100%
+    Gratis, tidak perlu API key
+    """
+    label = pair_labels.get(pair_id, pair_id)
+    hist  = price_history.get(pair_id, [])
+    vol_h = volume_history.get(pair_id, [])
+
+    if len(hist) < 10:
+        return 0, "Data tidak cukup"
+
+    score = 0
+    analysis = []
+
+    # ── Faktor 1: Jumlah sinyal (40 poin max) ──────────
+    signal_score = min(count / 17 * 40, 40)
+    score += signal_score
+    analysis.append(f"Sinyal: {count}/17 (+{signal_score:.0f})")
+
+    # ── Faktor 2: RSI quality (15 poin max) ───────────
+    rsi = details.get("rsi", 50)
+    if 25 <= rsi <= 35:
+        score += 15; analysis.append("RSI sangat oversold (+15)")
+    elif 35 < rsi <= 40:
+        score += 10; analysis.append("RSI oversold (+10)")
+    elif rsi > 70:
+        score -= 20; analysis.append("RSI overbought (-20)")
+
+    # ── Faktor 3: Trend kekuatan (15 poin max) ─────────
+    adx = details.get("adx", 0)
+    if adx > 40:
+        score += 15; analysis.append(f"Trend sangat kuat ADX={adx:.0f} (+15)")
+    elif adx > 25:
+        score += 8; analysis.append(f"Trend kuat ADX={adx:.0f} (+8)")
+
+    # ── Faktor 4: Volume confirmation (10 poin max) ────
+    if len(vol_h) >= 5:
+        avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
+        curr_vol = vol_h[-1]
+        if avg_vol > 0:
+            vol_ratio = curr_vol / avg_vol
+            if vol_ratio >= 3:
+                score += 10; analysis.append(f"Volume spike {vol_ratio:.1f}x (+10)")
+            elif vol_ratio >= 1.5:
+                score += 5; analysis.append(f"Volume tinggi {vol_ratio:.1f}x (+5)")
+
+    # ── Faktor 5: Price action (10 poin max) ──────────
+    if len(hist) >= 5:
+        recent_change = (hist[-1] - hist[-5]) / hist[-5] * 100
+        if -3 <= recent_change <= -0.5:
+            score += 10; analysis.append(f"Harga turun sehat {recent_change:.1f}% (+10)")
+        elif recent_change > 5:
+            score -= 10; analysis.append(f"Harga naik cepat {recent_change:.1f}% (-10)")
+
+    # ── Faktor 6: Alligator bonus (5 poin) ────────────
+    if details.get("alligator"):
+        score += 5; analysis.append("Alligator bullish (+5)")
+
+    # ── Faktor 7: VWAP bonus (5 poin) ─────────────────
+    if details.get("vwap"):
+        score += 5; analysis.append("Di bawah VWAP (+5)")
+
+    # Clamp score 0-100
+    score = max(0, min(100, score))
+
+    # Keputusan AI
+    if score >= 80:
+        verdict = "🟢 SANGAT YAKIN BELI"
+    elif score >= AI_MIN_SCORE:
+        verdict = "🟡 YAKIN BELI"
+    elif score >= 50:
+        verdict = "🟠 KURANG YAKIN — SKIP"
+    else:
+        verdict = "🔴 TIDAK YAKIN — SKIP"
+
+    summary = f"{verdict} | Skor: {score:.0f}%\n" + " | ".join(analysis[:4])
+    log(f"🧠 AI [{label}]: {score:.0f}% — {verdict}")
+    return score, summary
+
+# ── Claude API analisa (jika ada API key) ─────────────
+def claude_analyze(pair_id, count, reasons, details):
+    """Pakai Claude API jika CLAUDE_API_KEY tersedia"""
+    if not CLAUDE_KEY:
+        return ai_analyze(pair_id, count, reasons, details)
+
+    label = pair_labels.get(pair_id, pair_id)
+    hist  = price_history.get(pair_id, [])
+
+    prompt = f"""Kamu adalah analis crypto trading profesional untuk pasar Indonesia (Indodax).
+Analisa apakah ini waktu yang tepat untuk BUY {label}:
+
+Data teknikal:
+- Sinyal aktif: {count}/17 indikator
+- RSI: {details.get('rsi', 50):.1f}
+- MACD: {details.get('macd', 0):.4f} vs Signal: {details.get('macd_signal', 0):.4f}
+- ADX: {details.get('adx', 0):.1f}
+- Momentum: {details.get('momentum', 0):.2f}
+- Alligator bullish: {details.get('alligator', False)}
+- VWAP: harga {'di bawah' if details.get('vwap') else 'di atas'} VWAP
+- Sinyal aktif: {', '.join(reasons[:8])}
+
+Berikan:
+1. Skor keyakinan BUY (0-100)
+2. Alasan singkat (max 2 kalimat)
+
+Format jawaban HANYA:
+SKOR: [angka]
+ALASAN: [alasan]"""
+
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": CLAUDE_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 150,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=15
+        )
+        data = r.json()
+        text = data["content"][0]["text"]
+
+        # Parse response
+        lines = text.strip().split("\n")
+        score  = 50
+        alasan = "Tidak ada analisa"
+        for line in lines:
+            if line.startswith("SKOR:"):
+                try:
+                    score = int(line.replace("SKOR:", "").strip())
+                except:
+                    pass
+            elif line.startswith("ALASAN:"):
+                alasan = line.replace("ALASAN:", "").strip()
+
+        score = max(0, min(100, score))
+        verdict = "🟢 YAKIN BELI" if score >= AI_MIN_SCORE else "🔴 SKIP"
+        summary = f"{verdict} | Skor: {score}%\n{alasan}"
+        log(f"🤖 Claude [{label}]: {score}% — {verdict}")
+        return score, summary
+
+    except Exception as e:
+        log(f"⚠️ Claude API error: {e}, pakai internal AI")
+        return ai_analyze(pair_id, count, reasons, details)
 
 # ── Momentum prediktif ─────────────────────────────────
-def check_momentum(pair_id):
+def check_momentum_entry(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
     if len(hist) < 5 or len(vol_h) < 5:
@@ -397,8 +683,8 @@ def check_momentum(pair_id):
             signals.append("MACD Cross✅")
     if len(hist) >= 20:
         upper, mid, lower = calc_bollinger(hist)
-        band_width = (upper - lower) / mid * 100 if mid > 0 else 100
-        if band_width < 3.0:
+        bw = (upper - lower) / mid * 100 if mid > 0 else 100
+        if bw < 3.0:
             signals.append("BB Squeeze✅")
     rsi = calc_rsi(hist)
     if 30 <= rsi <= 50:
@@ -421,6 +707,9 @@ def check_exit_signal(pair_id):
         if hist_val < 0: exit_signals.append("MACD turun")
     if len(hist) >= 3 and hist[-1] < hist[-2] < hist[-3]:
         exit_signals.append("Harga turun 2x")
+    # Alligator bearish → exit
+    alligator_bull, _ = calc_alligator(hist)
+    if not alligator_bull: exit_signals.append("Alligator bearish")
     return len(exit_signals) >= 2, " | ".join(exit_signals)
 
 # ── Pilih pair terbaik ─────────────────────────────────
@@ -429,13 +718,13 @@ def choose_best_pairs():
     for pair_id in all_pairs:
         if pair_id in open_positions: continue
         if is_blacklisted(pair_id): continue
-        count, reasons = check_signals(pair_id)
-        has_momentum, momentum_desc = check_momentum(pair_id)
+        count, reasons, details = check_signals(pair_id)
+        has_momentum, momentum_desc = check_momentum_entry(pair_id)
         if count >= MIN_SIGNALS:
-            candidates.append((pair_id, count, reasons, "standard", ""))
+            candidates.append((pair_id, count, reasons, details, "standard", ""))
         elif has_momentum and count >= MIN_SIGNALS - 2:
-            candidates.append((pair_id, count, reasons, "momentum", momentum_desc))
-    candidates.sort(key=lambda x: (x[3] == "standard", x[1]), reverse=True)
+            candidates.append((pair_id, count, reasons, details, "momentum", momentum_desc))
+    candidates.sort(key=lambda x: (x[4] == "standard", x[1]), reverse=True)
     return candidates
 
 # ── Order ──────────────────────────────────────────────
@@ -449,22 +738,14 @@ def place_buy(pair_id, price, idr_amount):
     })
 
 def place_sell(pair_id, price, qty_to_sell):
-    """Jual HANYA qty yang bot beli — auto detect coin name & format"""
     coin = pair_id.replace("_idr", "")
-
-    # Auto-detect nama coin dan saldo aktual dari balance Indodax
     actual_qty, coin_key = get_coin_balance(coin)
-
     if actual_qty <= 0:
         log(f"⚠️ Saldo {coin} = 0, hapus posisi")
         return {"success": 1, "zero_balance": True}
-
-    # Jual hanya sebanyak yang bot beli
     sell_qty = min(qty_to_sell, actual_qty)
     qty_str  = format_qty(coin_key, sell_qty)
-
-    log(f"📤 SELL {pair_id} | {coin_key}:{qty_str} (bot:{qty_to_sell:.4f} | wallet:{actual_qty:.4f})")
-
+    log(f"📤 SELL {pair_id} | {coin_key}:{qty_str}")
     return indodax_request("trade", {
         "pair":    pair_id,
         "type":    "sell",
@@ -479,6 +760,7 @@ def bot_tick():
     reset_daily()
     get_idr_balance()
 
+    # Cek posisi — SELL/STOP tanpa perlu AI
     for pair_id in list(open_positions.keys()):
         pos       = open_positions[pair_id]
         buy_price = pos["buy_price"]
@@ -502,15 +784,19 @@ def bot_tick():
 
         has_exit, exit_desc = check_exit_signal(pair_id)
 
+        # Take profit + trailing
         if pl >= TAKE_PROFIT and trail_drop >= TRAIL_PCT:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | Trailing {trail_drop:.1f}%"
+        # Exit sinyal turun + sudah profit
         elif pl > 0 and has_exit:
             should_sell = True
             sell_reason = f"📉 Exit: {exit_desc} | P/L:{fmt(pl)}"
+        # Hard stop loss
         elif pl_pct <= -HARD_STOP:
             should_sell = True
             sell_reason = f"🚨 Hard Stop {pl_pct:.2f}%"
+        # Trailing stop
         elif trail_drop >= TRAIL_PCT and pl_pct <= -1:
             should_sell = True
             sell_reason = f"🛑 Trailing Stop {trail_drop:.1f}%"
@@ -534,13 +820,11 @@ def bot_tick():
                 continue
 
             result = place_sell(pair_id, curr, qty)
-
             if result and result.get("success") == 1:
                 get_idr_balance()
                 total_profit += pl
                 total_trades += 1
                 del open_positions[pair_id]
-
                 if not result.get("zero_balance"):
                     log(f"{sell_reason} | {label} | P/L:{fmt(pl)}")
                     send_telegram(
@@ -558,6 +842,7 @@ def bot_tick():
                 open_positions[pair_id]["last_sell_time"] = time.time()
                 log(f"⚠️ Gagal jual {label} attempt {attempts+1}/{SELL_RETRY}: {result}")
 
+    # Buka posisi baru — perlu persetujuan AI
     slots = MAX_TRADES - len(open_positions)
     if slots <= 0:
         log(f"📊 {len(open_positions)}/{MAX_TRADES} posisi penuh")
@@ -569,46 +854,57 @@ def bot_tick():
 
     candidates = choose_best_pairs()
     if not candidates:
-        log(f"⏳ Scan {TOP_N_PAIRS} pair — menunggu {MIN_SIGNALS}/12 sinyal... ({len(open_positions)}/{MAX_TRADES} posisi)")
+        log(f"⏳ Scan {TOP_N_PAIRS} pair — menunggu {MIN_SIGNALS}/17 sinyal... ({len(open_positions)}/{MAX_TRADES} posisi)")
         return
 
     idr_per_trade = (modal * 0.95) / MAX_TRADES
 
-    for pair_id, count, reasons, entry_type, momentum_desc in candidates[:slots]:
+    for pair_id, count, reasons, details, entry_type, momentum_desc in candidates[:slots]:
         if idr_per_trade < 10000:
             log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
             break
 
-        price = prices.get(pair_id, 0)
         label = pair_labels.get(pair_id, pair_id)
 
-        if entry_type == "momentum":
-            reason = f"🚀 MOMENTUM [{count}/12] {momentum_desc}"
-        else:
-            reason = f"[{count}/12] " + " | ".join(reasons)
+        # ── AI Analisa sebelum beli ────────────────────
+        log(f"🧠 AI menganalisa {label}...")
+        ai_score, ai_summary = claude_analyze(pair_id, count, reasons, details)
 
-        qty = idr_per_trade / price
+        if ai_score < AI_MIN_SCORE:
+            log(f"🔴 AI skip {label} | Skor: {ai_score}% < {AI_MIN_SCORE}%")
+            continue  # AI tidak yakin → skip coin ini
+
+        # AI setuju → lanjut beli!
+        price = prices.get(pair_id, 0)
+        qty   = idr_per_trade / price
+
+        if entry_type == "momentum":
+            reason = f"🚀 MOMENTUM [{count}/17] {momentum_desc}"
+        else:
+            reason = f"[{count}/17] " + " | ".join(reasons[:6])
 
         result = place_buy(pair_id, price, idr_per_trade)
         if result and result.get("success") == 1:
             get_idr_balance()
             total_trades += 1
             open_positions[pair_id] = {
-                "buy_price":     price,
-                "qty":           qty,
-                "idr":           idr_per_trade,
-                "peak_price":    price,
-                "sell_attempts": 0,
+                "buy_price":      price,
+                "qty":            qty,
+                "idr":            idr_per_trade,
+                "peak_price":     price,
+                "sell_attempts":  0,
                 "last_sell_time": 0,
-                "entry_type":    entry_type
+                "entry_type":     entry_type,
+                "ai_score":       ai_score
             }
-            log(f"🛒 BELI {label} | {fmt(price)} | {qty:.8f} unit | {reason}")
+            log(f"🛒 BELI {label} | {fmt(price)} | {qty:.8f} unit | AI:{ai_score}%")
             send_telegram(
                 f"🛒 *BELI {label}*\n"
                 f"Harga: {fmt(price)}\n"
                 f"Unit: {qty:.8f}\n"
                 f"Modal/trade: {fmt(idr_per_trade)}\n"
-                f"Entry: {reason}\n"
+                f"Sinyal: {reason}\n"
+                f"🧠 AI: {ai_summary}\n"
                 f"Posisi: {len(open_positions)}/{MAX_TRADES}\n"
                 f"Modal: {fmt(modal)}"
             )
@@ -618,7 +914,7 @@ def bot_tick():
 
 # ── Main ───────────────────────────────────────────────
 def main():
-    log("🚀 IndoBot v6 Final dimulai...")
+    log("🚀 IndoBot v8 AI dimulai...")
 
     while not test_api():
         log("⏳ Retry API..."); time.sleep(30)
@@ -627,20 +923,19 @@ def main():
         log("⏳ Retry load pair..."); time.sleep(30)
 
     send_telegram(
-        f"🚀 *IndoBot v6 Final AKTIF*\n"
+        f"🚀 *IndoBot v8 AI AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
         f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
         f"Hard Stop Loss: {HARD_STOP}%\n"
         f"Max Posisi: {MAX_TRADES} coin\n"
-        f"Scan: Top {TOP_N_PAIRS} pair volume tertinggi\n"
-        f"Min sinyal: {MIN_SIGNALS}/12\n"
-        f"Momentum entry: {MIN_SIGNALS-2}/12 + momentum\n"
-        f"Uptrend: {UPTREND_PCT}% coin naik\n"
+        f"Scan: Top {TOP_N_PAIRS} pair\n"
+        f"Min sinyal: {MIN_SIGNALS}/17\n"
+        f"🧠 AI min score: {AI_MIN_SCORE}%\n"
+        f"Uptrend: {UPTREND_PCT}%\n"
         f"Blacklist: {BLACKLIST_HR} jam\n"
-        f"Vol Spike: {VOL_SPIKE}x\n"
-        f"Fix: Integer qty untuk TROLLSOL/JELLYJELLY dll\n"
-        f"⚠️ Bot HANYA jual coin yang dia beli!\n"
+        f"Indikator baru: Alligator, PSAR, ADX, Momentum, VWAP\n"
+        f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"Mode: Non-stop seumur hidup! 🔄"
     )
 
