@@ -13,15 +13,15 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")   # optional, untuk AI analisa
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "1000"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "500"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.5"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "50"))   # scan 50 pair
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "10"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))  # AI harus yakin >= 70%
-BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "48"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "55"))  # AI harus yakin >= 55%
+BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "2"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
