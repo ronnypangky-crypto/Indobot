@@ -14,16 +14,16 @@ TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")   # optional, untuk AI analisa
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "500"))
-TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1.5"))
+TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "0.5"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "50"))   # scan 50 pair
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "10"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "55"))  # AI harus yakin >= 55%
-BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "2"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "50"))  # AI harus yakin >= 50%
+BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "48"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
-SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
+SELL_RETRY   = int(os.environ.get("SELL_RETRY", "6"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
 SCAN_INTERVAL = 60
 
@@ -123,11 +123,17 @@ INTEGER_COINS = {
     "moodeng", "pnut", "pengu", "useless", "doge", "anoa",
     "hart", "aura", "giga", "mew", "looks", "buildon",
     "strm", "pols", "degen", "islm", "trx", "molt", "ub",
+    "bananas31", "banana", "rats", "slerf", "bome", "wen",
+    "wen", "samo", "cope", "orca", "mngo", "step", "media",
+    "hxro", "maps", "kin", "tulip", "slim", "like", "larix",
+    "ray", "cope", "star", "liq", "wifi", "rope", "bop",
 }
 
 def format_qty(coin, qty):
+    """Format qty — integer untuk meme coin, 8 decimal untuk coin lain"""
     if coin.lower() in INTEGER_COINS:
         return str(int(qty))
+    # Kalau harga coin sangat murah (< Rp 1), kemungkinan perlu integer
     return f"{qty:.8f}"
 
 # ── Test API ───────────────────────────────────────────
@@ -746,12 +752,25 @@ def place_sell(pair_id, price, qty_to_sell):
     sell_qty = min(qty_to_sell, actual_qty)
     qty_str  = format_qty(coin_key, sell_qty)
     log(f"📤 SELL {pair_id} | {coin_key}:{qty_str}")
-    return indodax_request("trade", {
+    result = indodax_request("trade", {
         "pair":    pair_id,
         "type":    "sell",
         "price":   str(int(price * 0.99)),
         coin_key:  qty_str,
     })
+    # Auto-retry pakai integer kalau dapat error decimal
+    if result and result.get("error", "").find("decimal") != -1:
+        qty_str_int = str(int(sell_qty))
+        log(f"⚠️ Decimal error → retry dengan integer: {coin_key}:{qty_str_int}")
+        # Tambahkan ke INTEGER_COINS untuk berikutnya
+        INTEGER_COINS.add(coin_key.lower())
+        result = indodax_request("trade", {
+            "pair":    pair_id,
+            "type":    "sell",
+            "price":   str(int(price * 0.99)),
+            coin_key:  qty_str_int,
+        })
+    return result
 
 # ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
