@@ -951,20 +951,6 @@ def bot_tick():
             if time.time() - last_sell < 300 and attempts > 0:
                 log(f"⏳ {label} tunggu 5 menit retry...")
                 continue
-                
-# CEK DUST POSITION - skip jika nilai terlalu kecil
-        current_price = get_current_price(pair_id)
-        if current_price:
-            nilai_idr = qty * current_price
-            if nilai_idr < 10000:
-                log(f"⚠️ {label} nilai Rp {nilai_idr:.0f} (dust), skip sell")
-                send_telegram(
-                    f"⚠️ *{label}* dust position\n"
-                    f"Nilai: Rp {nilai_idr:.0f} (di bawah minimum)\n"
-                    f"Posisi dihapus otomatis."
-                )
-                del open_positions[pair_id]
-                continue
 
         result = place_sell(pair_id, curr, qty)  # line 955 existing
             result = place_sell(pair_id, curr, qty)
