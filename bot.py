@@ -13,17 +13,17 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")   # optional, untuk AI analisa
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "500"))
-TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "0.5"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "1000"))
+TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "50"))   # scan 50 pair
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "10"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "50"))  # AI harus yakin >= 50%
-BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "48"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))  # AI harus yakin >= 60%
+BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "2"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
-SELL_RETRY   = int(os.environ.get("SELL_RETRY", "6"))
+SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
 SCAN_INTERVAL = 60
 
@@ -40,6 +40,7 @@ all_pairs      = []
 pair_labels    = {}
 prices         = {}
 blacklist      = {}
+sold_prices    = {}   # {pair_id: harga_jual} — jangan beli di atas harga ini!
 daily_loss     = 0.0
 daily_start    = time.time()
 
@@ -724,6 +725,21 @@ def choose_best_pairs():
     for pair_id in all_pairs:
         if pair_id in open_positions: continue
         if is_blacklisted(pair_id): continue
+
+        curr_price = prices.get(pair_id, 0)
+
+        # ── Cek Price Ceiling ──────────────────────────
+        # Jangan beli lagi kalau harga masih di atas harga jual terakhir
+        if pair_id in sold_prices:
+            last_sell = sold_prices[pair_id]
+            if curr_price > last_sell:
+                log(f"⛔ Skip {pair_labels.get(pair_id, pair_id)} — harga {fmt(curr_price)} > harga jual {fmt(last_sell)}")
+                continue
+            else:
+                # Harga sudah turun di bawah harga jual → boleh beli lagi!
+                log(f"✅ {pair_labels.get(pair_id, pair_id)} harga turun ke {fmt(curr_price)} ≤ {fmt(last_sell)} → boleh beli!")
+                del sold_prices[pair_id]  # hapus price ceiling
+
         count, reasons, details = check_signals(pair_id)
         has_momentum, momentum_desc = check_momentum_entry(pair_id)
         if count >= MIN_SIGNALS:
@@ -733,44 +749,122 @@ def choose_best_pairs():
     candidates.sort(key=lambda x: (x[4] == "standard", x[1]), reverse=True)
     return candidates
 
-# ── Order ──────────────────────────────────────────────
+# ── Order — Market Style (instant fill) ───────────────
 def place_buy(pair_id, price, idr_amount):
-    log(f"📤 BUY {pair_id} | IDR:{int(idr_amount)}")
+    """Beli dengan harga agresif 3% di atas → langsung terisi (market-like)"""
+    market_price = int(price * 1.03)
+    log(f"📤 BUY {pair_id} | IDR:{int(idr_amount)} | Harga:{market_price} (market)")
     return indodax_request("trade", {
         "pair":  pair_id,
         "type":  "buy",
-        "price": str(int(price * 1.01)),
+        "price": str(market_price),
         "idr":   str(int(idr_amount)),
     })
 
 def place_sell(pair_id, price, qty_to_sell):
+    """Jual dengan harga agresif 3% di bawah → langsung terisi (market-like)"""
     coin = pair_id.replace("_idr", "")
     actual_qty, coin_key = get_coin_balance(coin)
     if actual_qty <= 0:
         log(f"⚠️ Saldo {coin} = 0, hapus posisi")
         return {"success": 1, "zero_balance": True}
-    sell_qty = min(qty_to_sell, actual_qty)
-    qty_str  = format_qty(coin_key, sell_qty)
-    log(f"📤 SELL {pair_id} | {coin_key}:{qty_str}")
+    sell_qty     = min(qty_to_sell, actual_qty)
+    qty_str      = format_qty(coin_key, sell_qty)
+    market_price = int(price * 0.97)
+    log(f"📤 SELL {pair_id} | {coin_key}:{qty_str} | Harga:{market_price} (market)")
     result = indodax_request("trade", {
         "pair":    pair_id,
         "type":    "sell",
-        "price":   str(int(price * 0.99)),
+        "price":   str(market_price),
         coin_key:  qty_str,
     })
     # Auto-retry pakai integer kalau dapat error decimal
-    if result and result.get("error", "").find("decimal") != -1:
+    if result and "decimal" in str(result.get("error", "")):
         qty_str_int = str(int(sell_qty))
-        log(f"⚠️ Decimal error → retry dengan integer: {coin_key}:{qty_str_int}")
-        # Tambahkan ke INTEGER_COINS untuk berikutnya
+        log(f"⚠️ Decimal error → retry integer: {coin_key}:{qty_str_int}")
         INTEGER_COINS.add(coin_key.lower())
         result = indodax_request("trade", {
             "pair":    pair_id,
             "type":    "sell",
-            "price":   str(int(price * 0.99)),
+            "price":   str(market_price),
             coin_key:  qty_str_int,
         })
     return result
+
+# ── Cancel semua open orders ───────────────────────────
+def cancel_all_open_orders():
+    """Cancel semua open orders yang stuck saat startup"""
+    log("🗑️ Cek dan cancel open orders yang stuck...")
+    result = indodax_request("openOrders", {"pair": ""})
+    if not result or result.get("success") != 1:
+        return
+    orders = result.get("return", {}).get("orders", {})
+    count = 0
+    for pair_id, order_list in orders.items():
+        if isinstance(order_list, dict):
+            order_list = [order_list]
+        for order in order_list:
+            order_id = order.get("order_id")
+            if order_id:
+                cancel = indodax_request("cancelOrder", {
+                    "pair":     pair_id,
+                    "order_id": str(order_id),
+                    "type":     order.get("type", "buy"),
+                })
+                if cancel and cancel.get("success") == 1:
+                    count += 1
+                    log(f"✅ Cancel order {order_id} {pair_id}")
+    if count > 0:
+        log(f"✅ {count} open order berhasil dibatalkan")
+        send_telegram(f"🗑️ *{count} Open Order Dibatalkan*\nSemua order stuck sudah dibersihkan!")
+
+# ── Baca wallet saat startup ───────────────────────────
+def restore_positions_from_wallet():
+    """Baca wallet Indodax saat startup — daftarkan coin sebagai posisi"""
+    global open_positions
+    log("💼 Baca wallet Indodax untuk restore posisi...")
+    balances = get_all_balances()
+    if not balances:
+        return
+
+    restored = []
+    for coin, qty in balances.items():
+        if coin == "idr":
+            continue
+        qty = float(qty)
+        if qty <= 0:
+            continue
+        pair_id = f"{coin}_idr"
+        if pair_id not in all_pairs:
+            continue
+        curr_price = prices.get(pair_id, 0)
+        if curr_price <= 0:
+            continue
+        est_value = qty * curr_price
+        if est_value < 5000:  # skip kalau nilainya < Rp 5rb
+            continue
+        # Daftarkan sebagai posisi dengan harga beli = harga sekarang
+        # (tidak tahu harga beli asli, pakai harga sekarang sebagai estimasi)
+        open_positions[pair_id] = {
+            "buy_price":     curr_price,
+            "qty":           qty,
+            "idr":           est_value,
+            "peak_price":    curr_price,
+            "sell_attempts": 0,
+            "last_sell_time": 0,
+            "entry_type":    "restored",
+            "ai_score":      0
+        }
+        restored.append(f"{coin.upper()}: {qty:.4f} (~{fmt(est_value)})")
+        log(f"✅ Restore posisi: {coin.upper()} {qty:.4f} @ {fmt(curr_price)}")
+
+    if restored:
+        send_telegram(
+            f"💼 *Posisi Restored dari Wallet:*\n" +
+            "\n".join(restored) +
+            f"\nTotal: {len(restored)} posisi"
+        )
+        log(f"✅ {len(restored)} posisi berhasil di-restore dari wallet")
 
 # ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
@@ -846,6 +940,8 @@ def bot_tick():
                 del open_positions[pair_id]
                 if not result.get("zero_balance"):
                     log(f"{sell_reason} | {label} | P/L:{fmt(pl)}")
+                    # Simpan harga jual — jangan beli lagi di atas harga ini!
+                    sold_prices[pair_id] = curr
                     send_telegram(
                         f"{sell_reason}\n*{label}*\n"
                         f"Harga: {fmt(curr)}\n"
@@ -941,6 +1037,15 @@ def main():
     while not fetch_all_pairs():
         log("⏳ Retry load pair..."); time.sleep(30)
 
+    # Fetch harga dulu sebelum restore posisi
+    fetch_prices()
+
+    # Cancel semua open orders yang stuck
+    cancel_all_open_orders()
+
+    # Restore posisi dari wallet
+    restore_positions_from_wallet()
+
     send_telegram(
         f"🚀 *IndoBot v8 AI AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
@@ -953,7 +1058,8 @@ def main():
         f"🧠 AI min score: {AI_MIN_SCORE}%\n"
         f"Uptrend: {UPTREND_PCT}%\n"
         f"Blacklist: {BLACKLIST_HR} jam\n"
-        f"Indikator baru: Alligator, PSAR, ADX, Momentum, VWAP\n"
+        f"Order: Market style (instant) ⚡\n"
+        f"Price Ceiling: Aktif 🔒\n"
         f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"Mode: Non-stop seumur hidup! 🔄"
     )
