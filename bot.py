@@ -952,7 +952,6 @@ def bot_tick():
                 log(f"⏳ {label} tunggu 5 menit retry...")
                 continue
 
-        result = place_sell(pair_id, curr, qty)  # line 955 existing
             result = place_sell(pair_id, curr, qty)
             if result and result.get("success") == 1:
                 get_idr_balance()
