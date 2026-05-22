@@ -798,14 +798,17 @@ def cancel_all_open_orders():
     result = indodax_request("openOrders", {"pair": ""})
     if not result or result.get("success") != 1:
         return
+
     orders = result.get("return", {}).get("orders", {})
     count = 0
-    for pair_id, order_list in orders.items():
-        if isinstance(order_list, dict):
-            order_list = [order_list]
-        for order in order_list:
+
+    # FIX: Handle both list dan dict response dari Indodax
+    if isinstance(orders, list):
+        # Indodax kadang return list of order dicts (tiap order punya key 'pair')
+        for order in orders:
+            pair_id = order.get("pair", "")
             order_id = order.get("order_id")
-            if order_id:
+            if order_id and pair_id:
                 cancel = indodax_request("cancelOrder", {
                     "pair":     pair_id,
                     "order_id": str(order_id),
@@ -814,10 +817,27 @@ def cancel_all_open_orders():
                 if cancel and cancel.get("success") == 1:
                     count += 1
                     log(f"✅ Cancel order {order_id} {pair_id}")
+
+    elif isinstance(orders, dict):
+        # Format normal: dict dengan key = pair_id
+        for pair_id, order_list in orders.items():
+            if isinstance(order_list, dict):
+                order_list = [order_list]
+            for order in order_list:
+                order_id = order.get("order_id")
+                if order_id:
+                    cancel = indodax_request("cancelOrder", {
+                        "pair":     pair_id,
+                        "order_id": str(order_id),
+                        "type":     order.get("type", "buy"),
+                    })
+                    if cancel and cancel.get("success") == 1:
+                        count += 1
+                        log(f"✅ Cancel order {order_id} {pair_id}")
+
     if count > 0:
         log(f"✅ {count} open order berhasil dibatalkan")
         send_telegram(f"🗑️ *{count} Open Order Dibatalkan*\nSemua order stuck sudah dibersihkan!")
-
 # ── Baca wallet saat startup ───────────────────────────
 def restore_positions_from_wallet():
     """Baca wallet Indodax saat startup — daftarkan coin sebagai posisi"""
