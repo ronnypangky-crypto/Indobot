@@ -273,4 +273,17 @@ def fetch_prices():
         for pair_id in all_pairs:
             if pair_id not in tickers:
                 continue
-            last = f1
+            last = float(tickers[pair_id].get("last", 0))
+            vol  = float(tickers[pair_id].get("vol_idr", 0))
+            if last <= 0:
+                continue
+            prices[pair_id] = last
+            price_history[pair_id].append(last)
+            if len(price_history[pair_id]) > 100:
+                price_history[pair_id].pop(0)
+            volume_history[pair_id].append(vol)
+            if len(volume_history[pair_id]) > 20:
+                volume_history[pair_id].pop(0)
+    except Exception as e:
+        log(f"⚠️ Gagal refresh harga: {e}")
+            
