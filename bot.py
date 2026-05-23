@@ -273,4 +273,4 @@ def fetch_prices():
         for pair_id in all_pairs:
             if pair_id not in tickers:
                 continue
-            last = fl
+            last = f1
