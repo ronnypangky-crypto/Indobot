@@ -18,9 +18,9 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "50"))   # scan 50 pair
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))  # scan 200 pair
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))  # AI harus yakin >= 60%
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "80"))  # AI harus yakin >= 80%
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "6"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
