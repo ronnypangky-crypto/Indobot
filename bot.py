@@ -12,15 +12,15 @@ API_KEY      = os.environ.get("INDODAX_API_KEY", "")
 SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
-CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")   # optional, untuk AI analisa
+CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "2000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))  # scan 200 pair
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))  # AI harus yakin >= 70%
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "6"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
@@ -40,10 +40,15 @@ all_pairs      = []
 pair_labels    = {}
 prices         = {}
 blacklist      = {}
-sold_prices    = {}   # {pair_id: harga_jual} — jangan beli di atas harga ini!
+sold_prices    = {}
 daily_loss     = 0.0
 daily_start    = time.time()
-fg_cache       = {"value": 50, "label": "Neutral", "timestamp": 0}  # Fear & Greed cache
+fg_cache       = {"value": 50, "label": "Neutral", "timestamp": 0}
+
+# ── Daily Summary State ────────────────────────────────
+daily_profit   = 0.0
+daily_trades   = 0
+last_summary   = ""
 
 # ── Helpers ────────────────────────────────────────────
 def fmt(n):
@@ -71,6 +76,32 @@ def send_telegram(msg):
         )
     except Exception as e:
         log(f"TG Error: {e}")
+
+# ── Daily Summary ──────────────────────────────────────
+def check_daily_summary():
+    global daily_profit, daily_trades, last_summary
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    # Kirim jam 21:00 WIB, sekali per hari
+    if now.hour == 21 and last_summary != today_str:
+        last_summary = today_str
+        fg_value, fg_label = get_fear_greed()
+        posisi_aktif = len(open_positions)
+        emoji = "🟢" if daily_profit >= 0 else "🔴"
+        send_telegram(
+            f"📊 *Daily Report — {now.strftime('%d/%m/%Y')}*\n"
+            f"Trade hari ini: {daily_trades}x\n"
+            f"Profit hari ini: {emoji} {fmt(daily_profit)}\n"
+            f"Total Profit: {fmt(total_profit)}\n"
+            f"Modal: {fmt(modal)}\n"
+            f"Posisi aktif: {posisi_aktif}/{MAX_TRADES}\n"
+            f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
+            f"Total Trade: {total_trades}"
+        )
+        # Reset counter harian
+        daily_profit = 0.0
+        daily_trades = 0
+        log("📊 Daily summary terkirim!")
 
 # ── Indodax API ────────────────────────────────────────
 def indodax_request(method, params=None):
@@ -132,7 +163,6 @@ INTEGER_COINS = {
 }
 
 def format_qty(coin, qty):
-    """Format qty — integer untuk meme coin, 8 decimal untuk coin lain"""
     if coin.lower() in INTEGER_COINS:
         return str(int(qty))
     return f"{qty:.8f}"
@@ -215,9 +245,7 @@ def check_market_trend():
 
 # ── Fear & Greed Index ─────────────────────────────────
 def get_fear_greed():
-    """Ambil Fear & Greed Index dari alternative.me — gratis, cache 1 jam"""
     global fg_cache
-    # Pakai cache kalau masih fresh (< 1 jam)
     if time.time() - fg_cache["timestamp"] < 3600:
         return fg_cache["value"], fg_cache["label"]
     try:
@@ -230,7 +258,7 @@ def get_fear_greed():
         return value, label
     except Exception as e:
         log(f"⚠️ Gagal ambil Fear & Greed: {e}")
-        return fg_cache["value"], fg_cache["label"]  # pakai cache lama kalau gagal
+        return fg_cache["value"], fg_cache["label"]
 
 # ── Fetch pairs ────────────────────────────────────────
 def fetch_all_pairs():
@@ -379,7 +407,6 @@ def calc_obv(arr, vol_arr):
         elif arr[i] < arr[i-1]: obv -= vol_arr[i]
     return obv
 
-# ── Alligator (Williams) ───────────────────────────────
 def calc_alligator(arr):
     if len(arr) < 13:
         return False, ""
@@ -389,7 +416,6 @@ def calc_alligator(arr):
     bullish = lips > teeth > jaw
     return bullish, f"Alligator: L={lips:.0f}>T={teeth:.0f}>J={jaw:.0f}"
 
-# ── Parabolic SAR ──────────────────────────────────────
 def calc_parabolic_sar(arr, af_start=0.02, af_max=0.2):
     if len(arr) < 10:
         return False, ""
@@ -398,7 +424,6 @@ def calc_parabolic_sar(arr, af_start=0.02, af_max=0.2):
     bullish = rising and arr[-1] > sar
     return bullish, f"PSAR={'↑' if bullish else '↓'}"
 
-# ── ADX ────────────────────────────────────────────────
 def calc_adx(arr, period=14):
     if len(arr) < period + 1:
         return 0, False
@@ -409,13 +434,11 @@ def calc_adx(arr, period=14):
     strong_trend = adx > 25
     return adx, strong_trend
 
-# ── Momentum ───────────────────────────────────────────
 def calc_momentum(arr, period=10):
     if len(arr) < period + 1:
         return 0
     return arr[-1] - arr[-period-1]
 
-# ── VWAP ───────────────────────────────────────────────
 def calc_vwap(arr, vol_arr):
     if len(arr) < 5 or len(vol_arr) < 5:
         return arr[-1] if arr else 0
@@ -427,7 +450,7 @@ def calc_vwap(arr, vol_arr):
         return arr[-1]
     return sum(p * v for p, v in zip(prices_slice, vols_slice)) / total_vol
 
-# ── 17 Indikator lengkap ───────────────────────────────
+# ── 17 Indikator ───────────────────────────────────────
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -438,93 +461,76 @@ def check_signals(pair_id):
     count, reasons = 0, []
     details = {}
 
-    # 1. RSI
     rsi = calc_rsi(hist)
     details["rsi"] = rsi
     if rsi < 40: count += 1; reasons.append(f"RSI={rsi:.0f}✅")
 
-    # 2. SMA crossover
     sma5 = calc_sma(hist, 5); sma20 = calc_sma(hist, 20)
     details["sma5"] = sma5; details["sma20"] = sma20
     if sma5 > sma20: count += 1; reasons.append("SMA↑✅")
 
-    # 3. MACD
     macd, signal, hist_val = calc_macd(hist)
     details["macd"] = macd; details["macd_signal"] = signal
     if macd > signal: count += 1; reasons.append("MACD↑✅")
 
-    # 4. Bollinger Bands
     upper, mid, lower = calc_bollinger(hist)
     details["bb_lower"] = lower; details["bb_upper"] = upper
     if price <= lower * 1.01: count += 1; reasons.append("BB✅")
 
-    # 5. EMA crossover
     ema9 = calc_ema(hist, 9); ema21 = calc_ema(hist, 21)
     details["ema9"] = ema9; details["ema21"] = ema21
     if ema9 > ema21: count += 1; reasons.append("EMA↑✅")
 
-    # 6. Volume
     if len(vol_h) >= 5 and vol_h[-1] > (sum(vol_h[:-1])/(len(vol_h)-1)) * 1.2:
         count += 1; reasons.append("Vol↑✅")
 
-    # 7. Stochastic RSI
     stoch = calc_stoch_rsi(hist)
     details["stoch_rsi"] = stoch
     if stoch < 20: count += 1; reasons.append("StochRSI✅")
 
-    # 8. CCI
     cci = calc_cci(hist)
     details["cci"] = cci
     if cci < -100: count += 1; reasons.append("CCI✅")
 
-    # 9. Williams %R
     wr = calc_williams_r(hist)
     details["williams_r"] = wr
     if wr < -80: count += 1; reasons.append("WR✅")
 
-    # 10. ROC
     roc = calc_roc(hist)
     details["roc"] = roc
     if roc > 0: count += 1; reasons.append("ROC↑✅")
 
-    # 11. ATR
     atr = calc_atr(hist)
     details["atr"] = atr
     if atr > price * 0.005: count += 1; reasons.append("ATR✅")
 
-    # 12. OBV
     obv = calc_obv(hist, vol_h)
     details["obv"] = obv
     if obv > 0: count += 1; reasons.append("OBV↑✅")
 
-    # 13. Alligator
     alligator_bull, alligator_desc = calc_alligator(hist)
     details["alligator"] = alligator_bull
     if alligator_bull: count += 1; reasons.append("Alligator✅")
 
-    # 14. Parabolic SAR
     psar_bull, psar_desc = calc_parabolic_sar(hist)
     details["psar"] = psar_bull
     if psar_bull: count += 1; reasons.append("PSAR✅")
 
-    # 15. ADX
     adx, strong_trend = calc_adx(hist)
     details["adx"] = adx
     if strong_trend: count += 1; reasons.append(f"ADX={adx:.0f}✅")
 
-    # 16. Momentum
     momentum = calc_momentum(hist)
     details["momentum"] = momentum
     if momentum > 0: count += 1; reasons.append("MOM↑✅")
 
-    # 17. VWAP
     vwap = calc_vwap(hist, vol_h)
     details["vwap"] = vwap
     if price < vwap: count += 1; reasons.append("VWAP✅")
 
     return count, reasons, details
 
-# ── AI Analisa (Internal — Gratis) ────────────────────
+# ── AI Analisa Internal ────────────────────────────────
 def ai_analyze(pair_id, count, reasons, details):
     label = pair_labels.get(pair_id, pair_id)
     hist  = price_history.get(pair_id, [])
@@ -536,12 +542,10 @@ def ai_analyze(pair_id, count, reasons, details):
     score = 0
     analysis = []
 
-    # ── Faktor 1: Jumlah sinyal (40 poin max) ──────────
     signal_score = min(count / 17 * 40, 40)
     score += signal_score
     analysis.append(f"Sinyal: {count}/17 (+{signal_score:.0f})")
 
-    # ── Faktor 2: RSI quality (15 poin max) ───────────
     rsi = details.get("rsi", 50)
     if 25 <= rsi <= 35:
         score += 15; analysis.append("RSI sangat oversold (+15)")
@@ -550,14 +554,12 @@ def ai_analyze(pair_id, count, reasons, details):
     elif rsi > 70:
         score -= 20; analysis.append("RSI overbought (-20)")
 
-    # ── Faktor 3: Trend kekuatan (15 poin max) ─────────
     adx = details.get("adx", 0)
     if adx > 40:
         score += 15; analysis.append(f"Trend sangat kuat ADX={adx:.0f} (+15)")
     elif adx > 25:
         score += 8; analysis.append(f"Trend kuat ADX={adx:.0f} (+8)")
 
-    # ── Faktor 4: Volume confirmation (10 poin max) ────
     if len(vol_h) >= 5:
         avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
         curr_vol = vol_h[-1]
@@ -568,7 +570,6 @@ def ai_analyze(pair_id, count, reasons, details):
             elif vol_ratio >= 1.5:
                 score += 5; analysis.append(f"Volume tinggi {vol_ratio:.1f}x (+5)")
 
-    # ── Faktor 5: Price action (10 poin max) ──────────
     if len(hist) >= 5:
         recent_change = (hist[-1] - hist[-5]) / hist[-5] * 100
         if -3 <= recent_change <= -0.5:
@@ -576,15 +577,12 @@ def ai_analyze(pair_id, count, reasons, details):
         elif recent_change > 5:
             score -= 10; analysis.append(f"Harga naik cepat {recent_change:.1f}% (-10)")
 
-    # ── Faktor 6: Alligator bonus (5 poin) ────────────
     if details.get("alligator"):
         score += 5; analysis.append("Alligator bullish (+5)")
 
-    # ── Faktor 7: VWAP bonus (5 poin) ─────────────────
     if details.get("vwap"):
         score += 5; analysis.append("Di bawah VWAP (+5)")
 
-    # ── Faktor 8: Fear & Greed Index (10 poin max) ────
     fg_value, fg_label = get_fear_greed()
     if fg_value <= 25:
         score += 10; analysis.append(f"Extreme Fear {fg_value} (+10) 😱")
@@ -595,10 +593,8 @@ def ai_analyze(pair_id, count, reasons, details):
     elif fg_value >= 55:
         score -= 5; analysis.append(f"Greed {fg_value} (-5) 😏")
 
-    # Clamp score 0-100
     score = max(0, min(100, score))
 
-    # Keputusan AI
     if score >= 80:
         verdict = "🟢 SANGAT YAKIN BELI"
     elif score >= AI_MIN_SCORE:
@@ -612,14 +608,12 @@ def ai_analyze(pair_id, count, reasons, details):
     log(f"🧠 AI [{label}]: {score:.0f}% — {verdict}")
     return score, summary
 
-# ── Claude API analisa (jika ada API key) ─────────────
+# ── Claude API ─────────────────────────────────────────
 def claude_analyze(pair_id, count, reasons, details):
-    """Pakai Claude API jika CLAUDE_API_KEY tersedia"""
     if not CLAUDE_KEY:
         return ai_analyze(pair_id, count, reasons, details)
 
     label = pair_labels.get(pair_id, pair_id)
-    hist  = price_history.get(pair_id, [])
     fg_value, fg_label = get_fear_greed()
 
     prompt = f"""Kamu adalah analis crypto trading profesional untuk pasar Indonesia (Indodax).
@@ -661,25 +655,20 @@ ALASAN: [alasan]"""
         )
         data = r.json()
         text = data["content"][0]["text"]
-
         lines = text.strip().split("\n")
         score  = 50
         alasan = "Tidak ada analisa"
         for line in lines:
             if line.startswith("SKOR:"):
-                try:
-                    score = int(line.replace("SKOR:", "").strip())
-                except:
-                    pass
+                try: score = int(line.replace("SKOR:", "").strip())
+                except: pass
             elif line.startswith("ALASAN:"):
                 alasan = line.replace("ALASAN:", "").strip()
-
         score = max(0, min(100, score))
         verdict = "🟢 YAKIN BELI" if score >= AI_MIN_SCORE else "🔴 SKIP"
         summary = f"{verdict} | Skor: {score}%\n{alasan}"
         log(f"🤖 Claude [{label}]: {score}% — {verdict}")
         return score, summary
-
     except Exception as e:
         log(f"⚠️ Claude API error: {e}, pakai internal AI")
         return ai_analyze(pair_id, count, reasons, details)
@@ -733,25 +722,22 @@ def check_exit_signal(pair_id):
 
 # ── Pilih pair terbaik ─────────────────────────────────
 def choose_best_pairs():
-    # ── Cek Fear & Greed dulu — kalau Extreme Greed skip semua beli
     fg_value, fg_label = get_fear_greed()
     if fg_value >= 80:
-        log(f"⛔ Extreme Greed ({fg_value} — {fg_label}) — skip semua beli!")
+        log(f"⛔ Extreme Greed ({fg_value}) — skip semua beli!")
         send_telegram(f"⛔ *Extreme Greed {fg_value}*\nMarket terlalu greedy — skip beli dulu!")
         return []
 
-    # Pair yang permanen di-skip (stablecoin, tidak profitable)
     SKIP_PAIRS = {"usdt_idr", "usdc_idr", "busd_idr"}
 
     candidates = []
     for pair_id in all_pairs:
-        if pair_id in SKIP_PAIRS: continue  # skip stablecoin
+        if pair_id in SKIP_PAIRS: continue
         if pair_id in open_positions: continue
         if is_blacklisted(pair_id): continue
 
         curr_price = prices.get(pair_id, 0)
 
-        # ── Cek Price Ceiling ──────────────────────────
         if pair_id in sold_prices:
             last_sell = sold_prices[pair_id]
             if curr_price > last_sell:
@@ -770,7 +756,7 @@ def choose_best_pairs():
     candidates.sort(key=lambda x: (x[4] == "standard", x[1]), reverse=True)
     return candidates
 
-# ── Order — Market Style (instant fill) ───────────────
+# ── Order ──────────────────────────────────────────────
 def place_buy(pair_id, price, idr_amount):
     market_price = int(price * 1.03)
     log(f"📤 BUY {pair_id} | IDR:{int(idr_amount)} | Harga:{market_price} (market)")
@@ -809,16 +795,14 @@ def place_sell(pair_id, price, qty_to_sell):
         })
     return result
 
-# ── Cancel semua open orders ───────────────────────────
+# ── Cancel open orders ─────────────────────────────────
 def cancel_all_open_orders():
     log("🗑️ Cek dan cancel open orders yang stuck...")
     result = indodax_request("openOrders", {"pair": ""})
     if not result or result.get("success") != 1:
         return
-
     orders = result.get("return", {}).get("orders", {})
     count = 0
-
     if isinstance(orders, list):
         for order in orders:
             pair_id  = order.get("pair", "")
@@ -832,7 +816,6 @@ def cancel_all_open_orders():
                 if cancel and cancel.get("success") == 1:
                     count += 1
                     log(f"✅ Cancel order {order_id} {pair_id}")
-
     elif isinstance(orders, dict):
         for pair_id, order_list in orders.items():
             if isinstance(order_list, dict):
@@ -848,19 +831,17 @@ def cancel_all_open_orders():
                     if cancel and cancel.get("success") == 1:
                         count += 1
                         log(f"✅ Cancel order {order_id} {pair_id}")
-
     if count > 0:
         log(f"✅ {count} open order berhasil dibatalkan")
         send_telegram(f"🗑️ *{count} Open Order Dibatalkan*\nSemua order stuck sudah dibersihkan!")
 
-# ── Baca wallet saat startup ───────────────────────────
+# ── Restore wallet ─────────────────────────────────────
 def restore_positions_from_wallet():
     global open_positions
     log("💼 Baca wallet Indodax untuk restore posisi...")
     balances = get_all_balances()
     if not balances:
         return
-
     restored = []
     for coin, qty in balances.items():
         if coin == "idr":
@@ -889,23 +870,21 @@ def restore_positions_from_wallet():
         }
         restored.append(f"{coin.upper()}: {qty:.4f} (~{fmt(est_value)})")
         log(f"✅ Restore posisi: {coin.upper()} {qty:.4f} @ {fmt(curr_price)}")
-
     if restored:
         send_telegram(
             f"💼 *Posisi Restored dari Wallet:*\n" +
             "\n".join(restored) +
             f"\nTotal: {len(restored)} posisi"
         )
-        log(f"✅ {len(restored)} posisi berhasil di-restore dari wallet")
 
 # ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
-    global modal, total_profit, total_trades
+    global modal, total_profit, total_trades, daily_profit, daily_trades
 
     reset_daily()
     get_idr_balance()
+    check_daily_summary()
 
-    # Cek posisi — SELL/STOP
     for pair_id in list(open_positions.keys()):
         pos       = open_positions[pair_id]
         buy_price = pos["buy_price"]
@@ -929,19 +908,15 @@ def bot_tick():
 
         has_exit, exit_desc = check_exit_signal(pair_id)
 
-        # Take profit + trailing
         if pl >= TAKE_PROFIT and trail_drop >= TRAIL_PCT:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | Trailing {trail_drop:.1f}%"
-        # Exit sinyal turun + sudah profit
         elif pl > 0 and has_exit:
             should_sell = True
             sell_reason = f"📉 Exit: {exit_desc} | P/L:{fmt(pl)}"
-        # Hard stop loss
         elif pl_pct <= -HARD_STOP:
             should_sell = True
             sell_reason = f"🚨 Hard Stop {pl_pct:.2f}%"
-        # Trailing stop
         elif trail_drop >= TRAIL_PCT and pl_pct <= -1:
             should_sell = True
             sell_reason = f"🛑 Trailing Stop {trail_drop:.1f}%"
@@ -969,13 +944,14 @@ def bot_tick():
                 get_idr_balance()
                 total_profit += pl
                 total_trades += 1
+                daily_profit += pl
+                daily_trades += 1
                 del open_positions[pair_id]
                 if not result.get("zero_balance"):
                     log(f"{sell_reason} | {label} | P/L:{fmt(pl)}")
                     sold_prices[pair_id] = curr
-                    # Hitung P/L bersih setelah fee Indodax 0.3% beli + jual
-                    fee_beli = idr_in * 0.003
-                    fee_jual = (curr * qty) * 0.003
+                    fee_beli  = idr_in * 0.003
+                    fee_jual  = (curr * qty) * 0.003
                     pl_bersih = pl - fee_beli - fee_jual
                     send_telegram(
                         f"{sell_reason}\n*{label}*\n"
@@ -994,7 +970,6 @@ def bot_tick():
                 open_positions[pair_id]["last_sell_time"] = time.time()
                 log(f"⚠️ Gagal jual {label} attempt {attempts+1}/{SELL_RETRY}: {result}")
 
-    # Buka posisi baru
     slots = MAX_TRADES - len(open_positions)
     if slots <= 0:
         log(f"📊 {len(open_positions)}/{MAX_TRADES} posisi penuh")
@@ -1076,7 +1051,6 @@ def main():
     cancel_all_open_orders()
     restore_positions_from_wallet()
 
-    # Ambil Fear & Greed saat startup
     fg_value, fg_label = get_fear_greed()
 
     send_telegram(
@@ -1095,6 +1069,7 @@ def main():
         f"Price Ceiling: Aktif 🔒\n"
         f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
+        f"Daily Report: Jam 21:00 WIB 📊\n"
         f"Mode: Non-stop seumur hidup! 🔄"
     )
 
