@@ -49,6 +49,7 @@ fg_cache       = {"value": 50, "label": "Neutral", "timestamp": 0}
 daily_profit   = 0.0
 daily_trades   = 0
 last_summary   = ""
+win_streak     = 0  # Anti-Martingale: hitung berapa kali profit berturut-turut
 
 # ── Helpers ────────────────────────────────────────────
 def fmt(n):
@@ -153,7 +154,7 @@ INTEGER_COINS = {
     "trollsol", "jellyjelly", "pippin", "whitewhale", "fartcoin",
     "sundog", "zerebro", "siren", "pepe", "shib", "floki",
     "babydoge", "bonk", "myro", "popcat", "neiro", "turbo",
-    "moodeng", "pnut", "pengu", "useless", "doge", "anoa",
+    "moodeng", "pnut", "pengu", "useless", "doge",
     "hart", "aura", "giga", "mew", "looks", "buildon",
     "strm", "pols", "degen", "islm", "trx", "molt", "ub",
     "bananas31", "banana", "rats", "slerf", "bome", "wen",
@@ -450,7 +451,21 @@ def calc_vwap(arr, vol_arr):
         return arr[-1]
     return sum(p * v for p, v in zip(prices_slice, vols_slice)) / total_vol
 
-# ── 17 Indikator ───────────────────────────────────────
+# ── RSI Divergence ─────────────────────────────────────
+def calc_rsi_divergence(arr):
+    """
+    Bullish RSI Divergence:
+    Harga turun (lower low) tapi RSI naik (higher low) = sinyal beli kuat
+    """
+    if len(arr) < 15:
+        return False
+    rsi_now  = calc_rsi(arr)
+    rsi_prev = calc_rsi(arr[:-5])
+    price_lower_low = arr[-1] < arr[-5]
+    rsi_higher_low  = rsi_now > rsi_prev
+    return price_lower_low and rsi_higher_low
+
+
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -582,6 +597,11 @@ def ai_analyze(pair_id, count, reasons, details):
 
     if details.get("vwap"):
         score += 5; analysis.append("Di bawah VWAP (+5)")
+
+    # ── Faktor 8b: RSI Divergence Bullish (10 poin) ───
+    hist = price_history.get(pair_id, [])
+    if calc_rsi_divergence(hist):
+        score += 10; analysis.append("RSI Divergence Bullish (+10) 🎯")
 
     fg_value, fg_label = get_fear_greed()
     if fg_value <= 25:
@@ -879,7 +899,7 @@ def restore_positions_from_wallet():
 
 # ── Bot Logic ──────────────────────────────────────────
 def bot_tick():
-    global modal, total_profit, total_trades, daily_profit, daily_trades
+    global modal, total_profit, total_trades, daily_profit, daily_trades, win_streak
 
     reset_daily()
     get_idr_balance()
@@ -908,18 +928,23 @@ def bot_tick():
 
         has_exit, exit_desc = check_exit_signal(pair_id)
 
-        if pl >= TAKE_PROFIT and trail_drop >= TRAIL_PCT:
+        # ATR Trailing Stop — dinamis berdasarkan volatilitas
+        atr = calc_atr(price_history.get(pair_id, []))
+        atr_trail_pct = (atr * 2 / peak) * 100 if peak > 0 else TRAIL_PCT
+        effective_trail = max(atr_trail_pct, TRAIL_PCT)
+
+        if pl >= TAKE_PROFIT and trail_drop >= effective_trail:
             should_sell = True
-            sell_reason = f"💰 Profit {fmt(pl)} | Trailing {trail_drop:.1f}%"
+            sell_reason = f"💰 Profit {fmt(pl)} | ATR Trail {trail_drop:.1f}%"
         elif pl > 0 and has_exit:
             should_sell = True
             sell_reason = f"📉 Exit: {exit_desc} | P/L:{fmt(pl)}"
         elif pl_pct <= -HARD_STOP:
             should_sell = True
             sell_reason = f"🚨 Hard Stop {pl_pct:.2f}%"
-        elif trail_drop >= TRAIL_PCT and pl_pct <= -1:
+        elif trail_drop >= effective_trail and pl_pct <= -1:
             should_sell = True
-            sell_reason = f"🛑 Trailing Stop {trail_drop:.1f}%"
+            sell_reason = f"🛑 ATR Trailing Stop {trail_drop:.1f}%"
 
         if should_sell:
             attempts  = pos.get("sell_attempts", 0)
@@ -953,12 +978,19 @@ def bot_tick():
                     fee_beli  = idr_in * 0.003
                     fee_jual  = (curr * qty) * 0.003
                     pl_bersih = pl - fee_beli - fee_jual
+                    # Anti-Martingale — track win/loss streak
+                    if pl > 0:
+                        win_streak += 1
+                        log(f"🏆 Win streak: {win_streak}")
+                    else:
+                        win_streak = 0
                     send_telegram(
                         f"{sell_reason}\n*{label}*\n"
                         f"Harga: {fmt(curr)}\n"
                         f"P/L Kotor: {fmt(pl)}\n"
                         f"Fee: {fmt(fee_beli + fee_jual)}\n"
                         f"P/L Bersih: {fmt(pl_bersih)}\n"
+                        f"Win Streak: {win_streak}🏆\n"
                         f"Total Profit: {fmt(total_profit)}\n"
                         f"Modal: {fmt(modal)}\n"
                         f"Total Trade: {total_trades}"
@@ -985,6 +1017,12 @@ def bot_tick():
         return
 
     idr_per_trade = (modal * 0.95) / MAX_TRADES
+
+    # Anti-Martingale — naikkan modal kalau lagi profit streak
+    am_multiplier = min(1.0 + (win_streak * 0.1), 1.5)  # max 1.5x
+    idr_per_trade = idr_per_trade * am_multiplier
+    if win_streak > 0:
+        log(f"🏆 Anti-Martingale aktif | Win streak: {win_streak} | Multiplier: {am_multiplier:.1f}x")
 
     for pair_id, count, reasons, details, entry_type, momentum_desc in candidates[:slots]:
         if idr_per_trade < 10000:
