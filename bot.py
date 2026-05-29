@@ -18,9 +18,9 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "250"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "80"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "6"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
@@ -459,7 +459,55 @@ def calc_rsi_divergence(arr):
     rsi_prev = calc_rsi(arr[:-5])
     return arr[-1] < arr[-5] and rsi_now > rsi_prev
 
-# ── Filter Harga Naik Terlalu Cepat ───────────────────
+# ── Orderbook Analysis ────────────────────────────────
+def get_orderbook_pressure(pair_id):
+    """
+    Cek tekanan buy vs sell dari orderbook Indodax.
+    Return: (buy_pressure, sell_pressure, desc)
+    buy_pressure > sell_pressure = bullish
+    """
+    try:
+        coin = pair_id.replace("_idr", "")
+        r = requests.get(
+            f"https://indodax.com/api/{pair_id}/depth",
+            timeout=10
+        )
+        d = r.json()
+        bids = d.get("buy", [])   # [[harga, qty], ...]
+        asks = d.get("sell", [])  # [[harga, qty], ...]
+
+        if not bids or not asks:
+            return 0, 0, "Orderbook kosong"
+
+        # Ambil 10 level teratas
+        top_bids = bids[:10]
+        top_asks = asks[:10]
+
+        # Hitung total nilai IDR di buy dan sell
+        buy_value  = sum(float(b[0]) * float(b[1]) for b in top_bids)
+        sell_value = sum(float(a[0]) * float(a[1]) for a in top_asks)
+
+        total = buy_value + sell_value
+        if total == 0:
+            return 0, 0, "Orderbook kosong"
+
+        buy_pct  = buy_value / total * 100
+        sell_pct = sell_value / total * 100
+
+        if buy_pct >= 60:
+            desc = f"Buy pressure {buy_pct:.0f}% 🟢"
+        elif sell_pct >= 60:
+            desc = f"Sell pressure {sell_pct:.0f}% 🔴"
+        else:
+            desc = f"Balance Buy:{buy_pct:.0f}% Sell:{sell_pct:.0f}%"
+
+        return buy_pct, sell_pct, desc
+
+    except Exception as e:
+        log(f"⚠️ Gagal ambil orderbook {pair_id}: {e}")
+        return 0, 0, "Error"
+
+
 def is_price_spiking(pair_id):
     """
     Return True kalau harga naik terlalu cepat (> PRICE_SPIKE_PCT dalam 5 menit)
@@ -614,6 +662,17 @@ def ai_analyze(pair_id, count, reasons, details):
 
     if calc_rsi_divergence(hist):
         score += 10; analysis.append("RSI Divergence Bullish (+10) 🎯")
+
+    # ── Faktor 9: Orderbook Pressure (10 poin max) ────
+    buy_pct, sell_pct, ob_desc = get_orderbook_pressure(pair_id)
+    if buy_pct >= 65:
+        score += 10; analysis.append(f"Orderbook bullish {buy_pct:.0f}% (+10) 📊")
+    elif buy_pct >= 55:
+        score += 5; analysis.append(f"Orderbook cenderung buy {buy_pct:.0f}% (+5) 📊")
+    elif sell_pct >= 65:
+        score -= 10; analysis.append(f"Orderbook bearish {sell_pct:.0f}% (-10) 📊")
+    elif sell_pct >= 55:
+        score -= 5; analysis.append(f"Orderbook cenderung sell {sell_pct:.0f}% (-5) 📊")
 
     fg_value, fg_label = get_fear_greed()
     if fg_value <= 25:
@@ -1075,6 +1134,7 @@ def bot_tick():
                 "ai_score":       ai_score
             }
             log(f"🛒 BELI {label} | {fmt(price)} | {qty:.8f} unit | AI:{ai_score}%")
+            buy_pct, sell_pct, ob_desc = get_orderbook_pressure(pair_id)
             send_telegram(
                 f"🛒 *BELI {label}*\n"
                 f"Harga: {fmt(price)}\n"
@@ -1082,6 +1142,7 @@ def bot_tick():
                 f"Modal/trade: {fmt(idr_per_trade)}\n"
                 f"Sinyal: {reason}\n"
                 f"🧠 AI: {ai_summary}\n"
+                f"📊 Orderbook: {ob_desc}\n"
                 f"Posisi: {len(open_positions)}/{MAX_TRADES}\n"
                 f"Modal: {fmt(modal)}"
             )
@@ -1120,6 +1181,7 @@ def main():
         f"Order: Market style (instant) ⚡\n"
         f"Price Ceiling: Aktif 🔒\n"
         f"Anti-Spike Filter: Aktif 🛡️\n"
+        f"Orderbook Analysis: Aktif 📊\n"
         f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
         f"Daily Report: Jam 21:00 WIB 📊\n"
