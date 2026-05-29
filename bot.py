@@ -26,6 +26,7 @@ UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
 SCAN_INTERVAL = 60
+PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
 
@@ -49,7 +50,7 @@ fg_cache       = {"value": 50, "label": "Neutral", "timestamp": 0}
 daily_profit   = 0.0
 daily_trades   = 0
 last_summary   = ""
-win_streak     = 0  # Anti-Martingale: hitung berapa kali profit berturut-turut
+win_streak     = 0
 
 # ── Helpers ────────────────────────────────────────────
 def fmt(n):
@@ -83,7 +84,6 @@ def check_daily_summary():
     global daily_profit, daily_trades, last_summary
     now = datetime.now()
     today_str = now.strftime("%Y-%m-%d")
-    # Kirim jam 21:00 WIB, sekali per hari
     if now.hour == 21 and last_summary != today_str:
         last_summary = today_str
         fg_value, fg_label = get_fear_greed()
@@ -99,7 +99,6 @@ def check_daily_summary():
             f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
             f"Total Trade: {total_trades}"
         )
-        # Reset counter harian
         daily_profit = 0.0
         daily_trades = 0
         log("📊 Daily summary terkirim!")
@@ -453,19 +452,34 @@ def calc_vwap(arr, vol_arr):
 
 # ── RSI Divergence ─────────────────────────────────────
 def calc_rsi_divergence(arr):
-    """
-    Bullish RSI Divergence:
-    Harga turun (lower low) tapi RSI naik (higher low) = sinyal beli kuat
-    """
+    """Bullish: harga turun tapi RSI naik = sinyal beli kuat"""
     if len(arr) < 15:
         return False
     rsi_now  = calc_rsi(arr)
     rsi_prev = calc_rsi(arr[:-5])
-    price_lower_low = arr[-1] < arr[-5]
-    rsi_higher_low  = rsi_now > rsi_prev
-    return price_lower_low and rsi_higher_low
+    return arr[-1] < arr[-5] and rsi_now > rsi_prev
 
+# ── Filter Harga Naik Terlalu Cepat ───────────────────
+def is_price_spiking(pair_id):
+    """
+    Return True kalau harga naik terlalu cepat (> PRICE_SPIKE_PCT dalam 5 menit)
+    Hindari beli di pucuk!
+    """
+    hist = price_history.get(pair_id, [])
+    if len(hist) < 5:
+        return False
+    price_5_ago = hist[-5]
+    price_now   = hist[-1]
+    if price_5_ago <= 0:
+        return False
+    change_pct = (price_now - price_5_ago) / price_5_ago * 100
+    if change_pct > PRICE_SPIKE_PCT:
+        label = pair_labels.get(pair_id, pair_id)
+        log(f"⛔ Skip {label} — harga naik {change_pct:.1f}% dalam 5 menit (spike!)")
+        return True
+    return False
 
+# ── 17 Indikator ───────────────────────────────────────
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -598,8 +612,6 @@ def ai_analyze(pair_id, count, reasons, details):
     if details.get("vwap"):
         score += 5; analysis.append("Di bawah VWAP (+5)")
 
-    # ── Faktor 8b: RSI Divergence Bullish (10 poin) ───
-    hist = price_history.get(pair_id, [])
     if calc_rsi_divergence(hist):
         score += 10; analysis.append("RSI Divergence Bullish (+10) 🎯")
 
@@ -755,6 +767,9 @@ def choose_best_pairs():
         if pair_id in SKIP_PAIRS: continue
         if pair_id in open_positions: continue
         if is_blacklisted(pair_id): continue
+
+        # ── Filter: Skip kalau harga naik terlalu cepat (beli di pucuk) ──
+        if is_price_spiking(pair_id): continue
 
         curr_price = prices.get(pair_id, 0)
 
@@ -978,7 +993,6 @@ def bot_tick():
                     fee_beli  = idr_in * 0.003
                     fee_jual  = (curr * qty) * 0.003
                     pl_bersih = pl - fee_beli - fee_jual
-                    # Anti-Martingale — track win/loss streak
                     if pl > 0:
                         win_streak += 1
                         log(f"🏆 Win streak: {win_streak}")
@@ -1019,7 +1033,7 @@ def bot_tick():
     idr_per_trade = (modal * 0.95) / MAX_TRADES
 
     # Anti-Martingale — naikkan modal kalau lagi profit streak
-    am_multiplier = min(1.0 + (win_streak * 0.1), 1.5)  # max 1.5x
+    am_multiplier = min(1.0 + (win_streak * 0.1), 1.5)
     idr_per_trade = idr_per_trade * am_multiplier
     if win_streak > 0:
         log(f"🏆 Anti-Martingale aktif | Win streak: {win_streak} | Multiplier: {am_multiplier:.1f}x")
@@ -1105,6 +1119,7 @@ def main():
         f"Blacklist: {BLACKLIST_HR} jam\n"
         f"Order: Market style (instant) ⚡\n"
         f"Price Ceiling: Aktif 🔒\n"
+        f"Anti-Spike Filter: Aktif 🛡️\n"
         f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
         f"Daily Report: Jam 21:00 WIB 📊\n"
