@@ -21,7 +21,7 @@ MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "250"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
-BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "8"))
+BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "6"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
@@ -51,6 +51,7 @@ daily_profit   = 0.0
 daily_trades   = 0
 last_summary   = ""
 win_streak     = 0
+spike_notified = {}  # {pair_id: timestamp} — catat coin yang sudah dinotif spike
 
 # ── Helpers ────────────────────────────────────────────
 def fmt(n):
@@ -527,7 +528,46 @@ def is_price_spiking(pair_id):
         return True
     return False
 
-# ── 17 Indikator ───────────────────────────────────────
+# ── Deteksi Coin Spike Besar ───────────────────────────
+def check_spike_alerts():
+    """
+    Deteksi coin yang naik >20% dalam 1 jam terakhir
+    Kirim notif Telegram sebagai peluang pullback
+    """
+    global spike_notified
+    now = time.time()
+
+    for pair_id in all_pairs:
+        if pair_id in open_positions:
+            continue
+        hist = price_history.get(pair_id, [])
+        if len(hist) < 60:
+            continue
+
+        price_now  = hist[-1]
+        price_1h   = hist[-60]  # 60 menit lalu (1 tick = 1 menit)
+        if price_1h <= 0:
+            continue
+
+        change_pct = (price_now - price_1h) / price_1h * 100
+
+        if change_pct >= 20:
+            # Cek sudah dinotif belum dalam 2 jam terakhir
+            last_notif = spike_notified.get(pair_id, 0)
+            if now - last_notif < 7200:
+                continue
+
+            label = pair_labels.get(pair_id, pair_id)
+            spike_notified[pair_id] = now
+            log(f"🚀 SPIKE ALERT: {label} naik {change_pct:.1f}% dalam 1 jam!")
+            send_telegram(
+                f"🚀 *SPIKE ALERT!*\n"
+                f"*{label}* naik *{change_pct:.1f}%* dalam 1 jam!\n"
+                f"Harga sekarang: {fmt(price_now)}\n"
+                f"Pantau peluang pullback — bot akan beli kalau ada sinyal! 👀"
+            )
+
+
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -978,6 +1018,7 @@ def bot_tick():
     reset_daily()
     get_idr_balance()
     check_daily_summary()
+    check_spike_alerts()
 
     for pair_id in list(open_positions.keys()):
         pos       = open_positions[pair_id]
@@ -1010,7 +1051,7 @@ def bot_tick():
         if pl >= TAKE_PROFIT and trail_drop >= effective_trail:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | ATR Trail {trail_drop:.1f}%"
-        elif pl > 0 and has_exit:
+        elif pl > (idr_in * 0.006) and has_exit:  # exit hanya kalau profit sudah nutup fee
             should_sell = True
             sell_reason = f"📉 Exit: {exit_desc} | P/L:{fmt(pl)}"
         elif pl_pct <= -HARD_STOP:
