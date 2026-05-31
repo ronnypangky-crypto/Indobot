@@ -5,7 +5,10 @@ import hashlib
 import requests
 import urllib.parse
 import json
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# WIB = UTC+7
+WIB = timezone(timedelta(hours=7))
 
 # ── Konfigurasi ────────────────────────────────────────
 API_KEY      = os.environ.get("INDODAX_API_KEY", "")
@@ -18,10 +21,10 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "1"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "250"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
-BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "6"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
+BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
@@ -61,7 +64,7 @@ def fmt(n):
     return f"Rp {n:.0f}"
 
 def now_str():
-    return datetime.now().strftime("%H:%M:%S")
+    return datetime.now(WIB).strftime("%H:%M:%S")
 
 def log(msg):
     print(f"[{now_str()}] {msg}", flush=True)
@@ -70,7 +73,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v8*\n{msg}\n⏰ {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v8*\n{msg}\n⏰ {datetime.now(WIB).strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -83,7 +86,7 @@ def send_telegram(msg):
 # ── Daily Summary ──────────────────────────────────────
 def check_daily_summary():
     global daily_profit, daily_trades, last_summary
-    now = datetime.now()
+    now      = datetime.now(WIB)
     today_str = now.strftime("%Y-%m-%d")
     if now.hour == 21 and last_summary != today_str:
         last_summary = today_str
@@ -209,10 +212,15 @@ def is_blacklisted(pair_id):
 
 def reset_daily():
     global daily_loss, daily_start
-    if time.time() - daily_start >= 86400:
+    now_wib  = datetime.now(WIB)
+    today    = now_wib.strftime("%Y-%m-%d")
+    if not hasattr(reset_daily, "last_date"):
+        reset_daily.last_date = today
+    if today != reset_daily.last_date:
+        reset_daily.last_date = today
         daily_loss  = 0.0
         daily_start = time.time()
-        log("🔄 Reset harian")
+        log("🔄 Reset harian WIB")
         send_telegram("🔄 *Reset Harian* — Daily loss dikosongkan!")
 
 # ── Market trend ───────────────────────────────────────
@@ -528,7 +536,86 @@ def is_price_spiking(pair_id):
         return True
     return False
 
-# ── Deteksi Coin Spike Besar ───────────────────────────
+# ── Pre-Spike Detection ────────────────────────────────
+def check_presike_entry(pair_id):
+    """
+    Deteksi coin yang MUNGKIN mau spike:
+    1. Harga murah < Rp 200
+    2. Orderbook buy wall tebal
+    3. Minimal 3/5 sinyal basic
+    Return: (layak_beli, orderbook_tier, sinyal_count, desc)
+    """
+    # Filter harga murah < Rp 200
+    curr_price = prices.get(pair_id, 0)
+    if curr_price <= 0 or curr_price > 200:
+        return False, 0, 0, ""
+
+    # Cek orderbook buy pressure
+    buy_pct, sell_pct, ob_desc = get_orderbook_pressure(pair_id)
+    buy_value_est = 0
+
+    try:
+        coin = pair_id.replace("_idr", "")
+        r = requests.get(f"https://indodax.com/api/{pair_id}/depth", timeout=10)
+        d = r.json()
+        bids = d.get("buy", [])[:10]
+        buy_value_est = sum(float(b[0]) * float(b[1]) for b in bids)
+    except:
+        return False, 0, 0, ""
+
+    # Tentukan tier orderbook
+    if buy_value_est < 100000:
+        return False, 0, 0, ""  # terlalu tipis, skip
+    elif buy_value_est >= 100000000:
+        ob_tier = 3  # BIG WHALE > Rp 100jt! 🐋🐋🐋
+        ob_label = f"BIG WHALE Rp {buy_value_est/1e6:.0f}jt 🐋🐋🐋"
+    elif buy_value_est >= 10000000:
+        ob_tier = 2  # Whale Rp 10jt-100jt
+        ob_label = f"Whale Rp {buy_value_est/1e6:.1f}jt 🐋🐋"
+    else:
+        ob_tier = 1  # Normal Rp 100rb-10jt
+        ob_label = f"Buy wall Rp {buy_value_est/1e3:.0f}rb 🐋"
+
+    # Cek 5 sinyal basic
+    hist  = price_history.get(pair_id, [])
+    vol_h = volume_history.get(pair_id, [])
+    if len(hist) < 10:
+        return False, 0, 0, ""
+
+    sinyal = 0
+    sinyal_list = []
+
+    # 1. RSI < 50 (tidak overbought)
+    rsi = calc_rsi(hist)
+    if rsi < 50: sinyal += 1; sinyal_list.append(f"RSI={rsi:.0f}✅")
+
+    # 2. Volume naik
+    if len(vol_h) >= 5:
+        avg_vol = sum(vol_h[:-1]) / (len(vol_h) - 1)
+        if avg_vol > 0 and vol_h[-1] > avg_vol * 1.2:
+            sinyal += 1; sinyal_list.append("Vol↑✅")
+
+    # 3. MACD bullish
+    macd, signal, _ = calc_macd(hist)
+    if macd > signal * 0.95: sinyal += 1; sinyal_list.append("MACD✅")
+
+    # 4. Alligator bullish
+    alligator_bull, _ = calc_alligator(hist)
+    if alligator_bull: sinyal += 1; sinyal_list.append("Alligator✅")
+
+    # 5. BB Squeeze (volatilitas rendah = mau meledak)
+    if len(hist) >= 20:
+        upper, mid, lower = calc_bollinger(hist)
+        bw = (upper - lower) / mid * 100 if mid > 0 else 100
+        if bw < 5.0: sinyal += 1; sinyal_list.append("BB Squeeze✅")
+
+    if sinyal < 3:
+        return False, ob_tier, sinyal, ""
+
+    desc = f"{ob_label} | {' | '.join(sinyal_list)}"
+    return True, ob_tier, sinyal, desc
+
+
 def check_spike_alerts():
     """
     Deteksi coin yang naik >20% dalam 1 jam terakhir
@@ -883,6 +970,13 @@ def choose_best_pairs():
 
         count, reasons, details = check_signals(pair_id)
         has_momentum, momentum_desc = check_momentum_entry(pair_id)
+
+        # ── Pre-Spike Entry (Batch 2) ──────────────────
+        layak, ob_tier, ps_sinyal, ps_desc = check_presike_entry(pair_id)
+        if layak and ob_tier >= 1:
+            candidates.append((pair_id, ps_sinyal, reasons, details, "presike", ps_desc))
+            continue
+
         if count >= MIN_SIGNALS:
             candidates.append((pair_id, count, reasons, details, "standard", ""))
         elif has_momentum and count >= MIN_SIGNALS - 2:
@@ -1048,7 +1142,12 @@ def bot_tick():
         atr_trail_pct = (atr * 2 / peak) * 100 if peak > 0 else TRAIL_PCT
         effective_trail = max(atr_trail_pct, TRAIL_PCT)
 
-        if pl >= TAKE_PROFIT and trail_drop >= effective_trail:
+        # Pre-Spike TP khusus — jual saat naik 10%
+        entry_type_pos = pos.get("entry_type", "standard")
+        if entry_type_pos == "presike" and pl_pct >= 10:
+            should_sell = True
+            sell_reason = f"🐋 Pre-Spike TP {pl_pct:.1f}% | P/L:{fmt(pl)}"
+        elif pl >= TAKE_PROFIT and trail_drop >= effective_trail:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | ATR Trail {trail_drop:.1f}%"
         elif pl > (idr_in * 0.006) and has_exit:  # exit hanya kalau profit sudah nutup fee
@@ -1148,14 +1247,19 @@ def bot_tick():
         log(f"🧠 AI menganalisa {label}...")
         ai_score, ai_summary = claude_analyze(pair_id, count, reasons, details)
 
-        if ai_score < AI_MIN_SCORE:
-            log(f"🔴 AI skip {label} | Skor: {ai_score}% < {AI_MIN_SCORE}%")
+        # Pre-spike entry pakai AI threshold 50%, standard/momentum pakai AI_MIN_SCORE
+        ai_threshold = 50 if entry_type == "presike" else AI_MIN_SCORE
+
+        if ai_score < ai_threshold:
+            log(f"🔴 AI skip {label} | Skor: {ai_score}% < {ai_threshold}%")
             continue
 
         price = prices.get(pair_id, 0)
         qty   = idr_per_trade / price
 
-        if entry_type == "momentum":
+        if entry_type == "presike":
+            reason = f"🐋 PRE-SPIKE | {momentum_desc}"
+        elif entry_type == "momentum":
             reason = f"🚀 MOMENTUM [{count}/17] {momentum_desc}"
         else:
             reason = f"[{count}/17] " + " | ".join(reasons[:6])
@@ -1223,6 +1327,7 @@ def main():
         f"Price Ceiling: Aktif 🔒\n"
         f"Anti-Spike Filter: Aktif 🛡️\n"
         f"Orderbook Analysis: Aktif 📊\n"
+        f"Pre-Spike Detection: Aktif 🐋\n"
         f"AI: {'Claude API' if CLAUDE_KEY else 'Internal AI (Gratis)'}\n"
         f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
         f"Daily Report: Jam 21:00 WIB 📊\n"
