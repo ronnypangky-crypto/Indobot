@@ -470,40 +470,35 @@ def calc_rsi_divergence(arr):
 
 # ── Orderbook Analysis ────────────────────────────────
 def get_orderbook_pressure(pair_id):
-    """Cek tekanan buy vs sell dari orderbook Indodax."""
+    """
+    Estimasi buy pressure dari volume history
+    karena endpoint /depth Indodax diblokir dari Railway
+    """
     try:
-        r = requests.get(
-            f"https://indodax.com/api/{pair_id}/depth",
-            timeout=10,
-            headers={"Accept": "application/json"}
-        )
-        if r.status_code != 200:
+        vol_h = volume_history.get(pair_id, [])
+        hist  = price_history.get(pair_id, [])
+        if len(vol_h) < 5 or len(hist) < 5:
             return 0, 0, "Tidak tersedia"
-        text = r.text.strip()
-        if not text or text[0] != '{':
+
+        # Volume naik + harga naik = buy pressure
+        # Volume naik + harga turun = sell pressure
+        avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
+        curr_vol = vol_h[-1]
+        price_up = hist[-1] >= hist[-2]
+
+        if avg_vol <= 0:
             return 0, 0, "Tidak tersedia"
-        d = r.json()
-        bids = d.get("buy", [])
-        asks = d.get("sell", [])
-        if not bids or not asks:
-            return 0, 0, "Tidak tersedia"
-        top_bids = bids[:10]
-        top_asks = asks[:10]
-        buy_value  = sum(float(b[0]) * float(b[1]) for b in top_bids)
-        sell_value = sum(float(a[0]) * float(a[1]) for a in top_asks)
-        total = buy_value + sell_value
-        if total == 0:
-            return 0, 0, "Tidak tersedia"
-        buy_pct  = buy_value / total * 100
-        sell_pct = sell_value / total * 100
-        if buy_pct >= 60:
-            desc = f"Buy pressure {buy_pct:.0f}% 🟢"
-        elif sell_pct >= 60:
-            desc = f"Sell pressure {sell_pct:.0f}% 🔴"
+
+        vol_ratio = curr_vol / avg_vol
+
+        if vol_ratio >= 1.5 and price_up:
+            buy_pct = 70
+            return 70, 30, f"Buy pressure {vol_ratio:.1f}x vol 🟢"
+        elif vol_ratio >= 1.5 and not price_up:
+            return 30, 70, f"Sell pressure {vol_ratio:.1f}x vol 🔴"
         else:
-            desc = f"Balance Buy:{buy_pct:.0f}% Sell:{sell_pct:.0f}%"
-        return buy_pct, sell_pct, desc
-    except Exception as e:
+            return 50, 50, f"Volume normal {vol_ratio:.1f}x"
+    except:
         return 0, 0, "Tidak tersedia"
 
 
@@ -531,78 +526,56 @@ def check_presike_entry(pair_id):
     """
     Deteksi coin yang MUNGKIN mau spike:
     1. Harga murah < Rp 200
-    2. Orderbook buy wall tebal
+    2. Volume mulai naik tapi harga belum bergerak banyak
     3. Minimal 3/5 sinyal basic
-    Return: (layak_beli, orderbook_tier, sinyal_count, desc)
     """
-    # Filter harga murah < Rp 200
     curr_price = prices.get(pair_id, 0)
     if curr_price <= 0 or curr_price > 200:
         return False, 0, 0, ""
 
-    # Cek orderbook buy wall
-    buy_pct, sell_pct, ob_desc = get_orderbook_pressure(pair_id)
-    buy_value_est = 0
-
-    try:
-        r = requests.get(
-            f"https://indodax.com/api/{pair_id}/depth",
-            timeout=10,
-            headers={"Accept": "application/json"}
-        )
-        if r.status_code == 200:
-            text = r.text.strip()
-            if text and text[0] == '{':
-                d = r.json()
-                bids = d.get("buy", [])[:10]
-                buy_value_est = sum(float(b[0]) * float(b[1]) for b in bids)
-    except:
-        pass
-
-    if buy_value_est == 0:
-        return False, 0, 0, ""
-
-    # Tentukan tier orderbook
-    if buy_value_est < 100000:
-        return False, 0, 0, ""  # terlalu tipis, skip
-    elif buy_value_est >= 100000000:
-        ob_tier = 3  # BIG WHALE > Rp 100jt! 🐋🐋🐋
-        ob_label = f"BIG WHALE Rp {buy_value_est/1e6:.0f}jt 🐋🐋🐋"
-    elif buy_value_est >= 10000000:
-        ob_tier = 2  # Whale Rp 10jt-100jt
-        ob_label = f"Whale Rp {buy_value_est/1e6:.1f}jt 🐋🐋"
-    else:
-        ob_tier = 1  # Normal Rp 100rb-10jt
-        ob_label = f"Buy wall Rp {buy_value_est/1e3:.0f}rb 🐋"
-
-    # Cek 5 sinyal basic
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
-    if len(hist) < 10:
+    if len(hist) < 10 or len(vol_h) < 5:
         return False, 0, 0, ""
+
+    avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
+    curr_vol = vol_h[-1]
+    if avg_vol <= 0:
+        return False, 0, 0, ""
+
+    vol_ratio = curr_vol / avg_vol
+
+    if vol_ratio >= 5:
+        ob_tier = 3
+        ob_label = f"Volume spike {vol_ratio:.1f}x 🐋🐋🐋"
+    elif vol_ratio >= 3:
+        ob_tier = 2
+        ob_label = f"Volume naik {vol_ratio:.1f}x 🐋🐋"
+    elif vol_ratio >= 1.5:
+        ob_tier = 1
+        ob_label = f"Volume mulai {vol_ratio:.1f}x 🐋"
+    else:
+        return False, 0, 0, ""
+
+    if len(hist) >= 5:
+        price_change = (hist[-1] - hist[-5]) / hist[-5] * 100
+        if price_change > 5:
+            return False, 0, 0, ""
 
     sinyal = 0
     sinyal_list = []
 
-    # 1. RSI < 50 (tidak overbought)
     rsi = calc_rsi(hist)
     if rsi < 50: sinyal += 1; sinyal_list.append(f"RSI={rsi:.0f}✅")
 
-    # 2. Volume naik
-    if len(vol_h) >= 5:
-        avg_vol = sum(vol_h[:-1]) / (len(vol_h) - 1)
-        if avg_vol > 0 and vol_h[-1] > avg_vol * 1.2:
-            sinyal += 1; sinyal_list.append("Vol↑✅")
+    if vol_ratio >= 1.5: sinyal += 1; sinyal_list.append(f"Vol{vol_ratio:.1f}x✅")
 
-    # 3. MACD bullish
     macd, signal, _ = calc_macd(hist)
     if macd > signal * 0.95: sinyal += 1; sinyal_list.append("MACD✅")
 
-    # 4. Alligator bullish
     alligator_bull, _ = calc_alligator(hist)
     if alligator_bull: sinyal += 1; sinyal_list.append("Alligator✅")
 
-    # 5. BB Squeeze (volatilitas rendah = mau meledak)
     if len(hist) >= 20:
         upper, mid, lower = calc_bollinger(hist)
         bw = (upper - lower) / mid * 100 if mid > 0 else 100
@@ -612,8 +585,8 @@ def check_presike_entry(pair_id):
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
+    log(f"🐋 Pre-Spike detected: {pair_labels.get(pair_id, pair_id)} | {desc}")
     return True, ob_tier, sinyal, desc
-
 
 def check_spike_alerts():
     """
