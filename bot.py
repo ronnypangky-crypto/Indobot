@@ -21,9 +21,9 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
-MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
@@ -525,12 +525,12 @@ def is_price_spiking(pair_id):
 def check_presike_entry(pair_id):
     """
     Deteksi coin yang MUNGKIN mau spike:
-    1. Harga murah < Rp 200
+    1. Harga minimal (no upper limit) — catch semua altcoin
     2. Volume mulai naik tapi harga belum bergerak banyak
-    3. Minimal 3/5 sinyal basic
+    3. Minimal 4/5 sinyal basic
     """
     curr_price = prices.get(pair_id, 0)
-    if curr_price <= 0 or curr_price > 200:
+    if curr_price <= 0:
         return False, 0, 0, ""
 
     hist  = price_history.get(pair_id, [])
@@ -559,7 +559,10 @@ def check_presike_entry(pair_id):
 
     if len(hist) >= 5:
         price_change = (hist[-1] - hist[-5]) / hist[-5] * 100
-        if price_change > 5:
+        # Pre-spike hanya terima kalau harga belum naik banyak (< 3%) dan tidak turun >5%
+        if price_change > 3:  # Sudah ketinggalan momentum
+            return False, 0, 0, ""
+        if price_change < -5:  # Terlalu turun, avoid buying at bottom loss
             return False, 0, 0, ""
 
     sinyal = 0
@@ -581,7 +584,7 @@ def check_presike_entry(pair_id):
         bw = (upper - lower) / mid * 100 if mid > 0 else 100
         if bw < 5.0: sinyal += 1; sinyal_list.append("BB Squeeze✅")
 
-    if sinyal < 3:
+    if sinyal < 4:
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
