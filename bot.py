@@ -535,7 +535,7 @@ def check_presike_entry(pair_id):
 
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
-    if len(hist) < 10 or len(vol_h) < 5:
+    if len(hist) < 5 or len(vol_h) < 3:
         return False, 0, 0, ""
 
     avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
