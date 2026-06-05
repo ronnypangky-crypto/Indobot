@@ -16,19 +16,19 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "3000"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "5000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
-MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 60
+SCAN_INTERVAL = 30
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
@@ -73,7 +73,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v8*\n{msg}\n⏰ {datetime.now(WIB).strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v9*\n{msg}\n⏰ {datetime.now(WIB).strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -86,26 +86,33 @@ def send_telegram(msg):
 # ── Daily Summary ──────────────────────────────────────
 def check_daily_summary():
     global daily_profit, daily_trades, last_summary
-    now      = datetime.now(WIB)
-    today_str = now.strftime("%Y-%m-%d")
-    if now.hour == 21 and last_summary != today_str:
-        last_summary = today_str
+    now       = datetime.now(WIB)
+    # Kirim setiap 6 jam: 06:00, 12:00, 18:00, 21:00 WIB
+    report_hours = [6, 12, 18, 21]
+    hour_key  = f"{now.strftime('%Y-%m-%d')}-{now.hour}"
+    if now.hour in report_hours and last_summary != hour_key:
+        last_summary = hour_key
         fg_value, fg_label = get_fear_greed()
         posisi_aktif = len(open_positions)
         emoji = "🟢" if daily_profit >= 0 else "🔴"
+        # Reset harian hanya jam 21:00
+        label_report = "📊 *Daily Report*" if now.hour == 21 else "📊 *Update Report*"
         send_telegram(
-            f"📊 *Daily Report — {now.strftime('%d/%m/%Y')}*\n"
-            f"Trade hari ini: {daily_trades}x\n"
-            f"Profit hari ini: {emoji} {fmt(daily_profit)}\n"
+            f"{label_report} — {now.strftime('%d/%m/%Y %H:%M')} WIB\n"
+            f"Trade: {daily_trades}x\n"
+            f"Profit: {emoji} {fmt(daily_profit)}\n"
             f"Total Profit: {fmt(total_profit)}\n"
             f"Modal: {fmt(modal)}\n"
             f"Posisi aktif: {posisi_aktif}/{MAX_TRADES}\n"
             f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
             f"Total Trade: {total_trades}"
         )
-        daily_profit = 0.0
-        daily_trades = 0
-        log("📊 Daily summary terkirim!")
+        if now.hour == 21:
+            daily_profit = 0.0
+            daily_trades = 0
+            log("📊 Daily summary terkirim & reset!")
+        else:
+            log(f"📊 Update report jam {now.hour}:00 terkirim!")
 
 # ── Indodax API ────────────────────────────────────────
 def indodax_request(method, params=None):
@@ -525,12 +532,12 @@ def is_price_spiking(pair_id):
 def check_presike_entry(pair_id):
     """
     Deteksi coin yang MUNGKIN mau spike:
-    1. Harga minimal (no upper limit) — catch semua altcoin
+    1. Harga murah < Rp 200
     2. Volume mulai naik tapi harga belum bergerak banyak
-    3. Minimal 4/5 sinyal basic
+    3. Minimal 3/5 sinyal basic
     """
     curr_price = prices.get(pair_id, 0)
-    if curr_price <= 0:
+    if curr_price <= 0 or curr_price > 200:
         return False, 0, 0, ""
 
     hist  = price_history.get(pair_id, [])
@@ -559,10 +566,7 @@ def check_presike_entry(pair_id):
 
     if len(hist) >= 5:
         price_change = (hist[-1] - hist[-5]) / hist[-5] * 100
-        # Pre-spike hanya terima kalau harga belum naik banyak (< 3%) dan tidak turun >5%
-        if price_change > 3:  # Sudah ketinggalan momentum
-            return False, 0, 0, ""
-        if price_change < -5:  # Terlalu turun, avoid buying at bottom loss
+        if price_change > 5:
             return False, 0, 0, ""
 
     sinyal = 0
@@ -584,7 +588,7 @@ def check_presike_entry(pair_id):
         bw = (upper - lower) / mid * 100 if mid > 0 else 100
         if bw < 5.0: sinyal += 1; sinyal_list.append("BB Squeeze✅")
 
-    if sinyal < 4:
+    if sinyal < 3:
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
@@ -621,13 +625,7 @@ def check_spike_alerts():
 
             label = pair_labels.get(pair_id, pair_id)
             spike_notified[pair_id] = now
-            log(f"🚀 SPIKE ALERT: {label} naik {change_pct:.1f}% dalam 1 jam!")
-            send_telegram(
-                f"🚀 *SPIKE ALERT!*\n"
-                f"*{label}* naik *{change_pct:.1f}%* dalam 1 jam!\n"
-                f"Harga sekarang: {fmt(price_now)}\n"
-                f"Pantau peluang pullback — bot akan beli kalau ada sinyal! 👀"
-            )
+            log(f"🚀 SPIKE ALERT: {label} naik {change_pct:.1f}% dalam 1 jam! (log only)")
 
 
 def check_signals(pair_id):
@@ -921,7 +919,7 @@ def choose_best_pairs():
         send_telegram(f"⛔ *Extreme Greed {fg_value}*\nMarket terlalu greedy — skip beli dulu!")
         return []
 
-    SKIP_PAIRS = {"usdt_idr", "usdc_idr", "busd_idr"}
+    SKIP_PAIRS = {"usdt_idr", "usdc_idr", "busd_idr", "doge_idr", "rvn_idr", "shib_idr"}
 
     candidates = []
     for pair_id in all_pairs:
@@ -963,12 +961,22 @@ def choose_best_pairs():
 def place_buy(pair_id, price, idr_amount):
     market_price = int(price * 1.03)
     log(f"📤 BUY {pair_id} | IDR:{int(idr_amount)} | Harga:{market_price} (market)")
-    return indodax_request("trade", {
+    result = indodax_request("trade", {
         "pair":  pair_id,
         "type":  "buy",
         "price": str(market_price),
         "idr":   str(int(idr_amount)),
     })
+    if result and result.get("success") == 1:
+        order_id = result.get("return", {}).get("order_id", "")
+        if order_id:
+            log(f"✅ BUY order terpasang: {order_id}")
+        else:
+            log(f"✅ BUY langsung terisi")
+    elif result:
+        err = result.get("error", "Unknown error")
+        log(f"⚠️ BUY gagal: {err}")
+    return result
 
 def place_sell(pair_id, price, qty_to_sell):
     coin = pair_id.replace("_idr", "")
@@ -986,7 +994,11 @@ def place_sell(pair_id, price, qty_to_sell):
         "price":   str(market_price),
         coin_key:  qty_str,
     })
-    if result and "decimal" in str(result.get("error", "")):
+    if result is None:
+        log(f"⚠️ SELL {pair_id} timeout/no response")
+        return None
+    err = result.get("error", "")
+    if "decimal" in str(err):
         qty_str_int = str(int(sell_qty))
         log(f"⚠️ Decimal error → retry integer: {coin_key}:{qty_str_int}")
         INTEGER_COINS.add(coin_key.lower())
@@ -996,21 +1008,45 @@ def place_sell(pair_id, price, qty_to_sell):
             "price":   str(market_price),
             coin_key:  qty_str_int,
         })
+    elif "minimum" in str(err).lower():
+        log(f"⚠️ SELL {pair_id} di bawah minimum order — dust position")
+        return {"success": 1, "zero_balance": True}
+    elif "insufficient" in str(err).lower():
+        log(f"⚠️ SELL {pair_id} saldo tidak cukup")
+        return {"success": 1, "zero_balance": True}
+    elif err and result.get("success") != 1:
+        log(f"⚠️ SELL {pair_id} error: {err}")
     return result
 
 # ── Cancel open orders ─────────────────────────────────
 def cancel_all_open_orders():
     log("🗑️ Cek dan cancel open orders yang stuck...")
-    result = indodax_request("openOrders", {"pair": ""})
-    if not result or result.get("success") != 1:
-        return
-    orders = result.get("return", {}).get("orders", {})
     count = 0
-    if isinstance(orders, list):
-        for order in orders:
-            pair_id  = order.get("pair", "")
+    # Scan per pair yang diketahui — lebih efektif dari pair=""
+    pairs_to_check = list(open_positions.keys()) + all_pairs[:20]
+    checked = set()
+    for pair_id in pairs_to_check:
+        if pair_id in checked:
+            continue
+        checked.add(pair_id)
+        result = indodax_request("openOrders", {"pair": pair_id})
+        if not result or result.get("success") != 1:
+            continue
+        orders = result.get("return", {}).get("orders", {})
+        if not orders:
+            continue
+        if isinstance(orders, list):
+            order_list = orders
+        elif isinstance(orders, dict):
+            order_list = []
+            for v in orders.values():
+                if isinstance(v, list): order_list.extend(v)
+                elif isinstance(v, dict): order_list.append(v)
+        else:
+            continue
+        for order in order_list:
             order_id = order.get("order_id")
-            if order_id and pair_id:
+            if order_id:
                 cancel = indodax_request("cancelOrder", {
                     "pair":     pair_id,
                     "order_id": str(order_id),
@@ -1019,21 +1055,6 @@ def cancel_all_open_orders():
                 if cancel and cancel.get("success") == 1:
                     count += 1
                     log(f"✅ Cancel order {order_id} {pair_id}")
-    elif isinstance(orders, dict):
-        for pair_id, order_list in orders.items():
-            if isinstance(order_list, dict):
-                order_list = [order_list]
-            for order in order_list:
-                order_id = order.get("order_id")
-                if order_id:
-                    cancel = indodax_request("cancelOrder", {
-                        "pair":     pair_id,
-                        "order_id": str(order_id),
-                        "type":     order.get("type", "buy"),
-                    })
-                    if cancel and cancel.get("success") == 1:
-                        count += 1
-                        log(f"✅ Cancel order {order_id} {pair_id}")
     if count > 0:
         log(f"✅ {count} open order berhasil dibatalkan")
         send_telegram(f"🗑️ *{count} Open Order Dibatalkan*\nSemua order stuck sudah dibersihkan!")
@@ -1223,11 +1244,13 @@ def bot_tick():
         ai_score, ai_summary = claude_analyze(pair_id, count, reasons, details)
 
         # Pre-spike entry pakai AI threshold 50%, standard/momentum pakai AI_MIN_SCORE
-        ai_threshold = 50 if entry_type == "presike" else AI_MIN_SCORE
-
-        if ai_score < ai_threshold:
-            log(f"🔴 AI skip {label} | Skor: {ai_score}% < {ai_threshold}%")
-            continue
+        # Pre-Spike bypass AI — langsung beli tanpa perlu AI score
+        if entry_type == "presike":
+            log(f"🐋 Pre-Spike bypass AI — langsung beli {label}!")
+        else:
+            if ai_score < AI_MIN_SCORE:
+                log(f"🔴 AI skip {label} | Skor: {ai_score}% < {AI_MIN_SCORE}%")
+                continue
 
         price = prices.get(pair_id, 0)
         qty   = idr_per_trade / price
@@ -1272,7 +1295,7 @@ def bot_tick():
 
 # ── Main ───────────────────────────────────────────────
 def main():
-    log("🚀 IndoBot v8 AI dimulai...")
+    log("🚀 IndoBot v9 AI dimulai...")
 
     while not test_api():
         log("⏳ Retry API..."); time.sleep(30)
@@ -1287,7 +1310,7 @@ def main():
     fg_value, fg_label = get_fear_greed()
 
     send_telegram(
-        f"🚀 *IndoBot v8 AI AKTIF*\n"
+        f"🚀 *IndoBot v9 AI AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
         f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
