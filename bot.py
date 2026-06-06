@@ -16,13 +16,13 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "5000"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "3000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
-MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
@@ -73,7 +73,7 @@ def log(msg):
 def send_telegram(msg):
     if not TG_TOKEN or not TG_CHAT_ID:
         return
-    text = f"🤖 *IndoBot v8*\n{msg}\n⏰ {datetime.now(WIB).strftime('%d/%m/%Y %H:%M:%S')}"
+    text = f"🤖 *IndoBot v9*\n{msg}\n⏰ {datetime.now(WIB).strftime('%d/%m/%Y %H:%M:%S')}"
     try:
         requests.post(
             f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage",
@@ -1272,7 +1272,7 @@ def bot_tick():
 
 # ── Main ───────────────────────────────────────────────
 def main():
-    log("🚀 IndoBot v8 AI dimulai...")
+    log("🚀 IndoBot v9 AI dimulai...")
 
     while not test_api():
         log("⏳ Retry API..."); time.sleep(30)
@@ -1287,7 +1287,7 @@ def main():
     fg_value, fg_label = get_fear_greed()
 
     send_telegram(
-        f"🚀 *IndoBot v8 AI AKTIF*\n"
+        f"🚀 *IndoBot v9 AI AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
         f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
