@@ -21,7 +21,7 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "200"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
@@ -86,26 +86,31 @@ def send_telegram(msg):
 # ── Daily Summary ──────────────────────────────────────
 def check_daily_summary():
     global daily_profit, daily_trades, last_summary
-    now      = datetime.now(WIB)
-    today_str = now.strftime("%Y-%m-%d")
-    if now.hour == 21 and last_summary != today_str:
-        last_summary = today_str
+    now       = datetime.now(WIB)
+    report_hours = [6, 12, 18, 21]
+    hour_key  = f"{now.strftime('%Y-%m-%d')}-{now.hour}"
+    if now.hour in report_hours and last_summary != hour_key:
+        last_summary = hour_key
         fg_value, fg_label = get_fear_greed()
         posisi_aktif = len(open_positions)
         emoji = "🟢" if daily_profit >= 0 else "🔴"
+        label_report = "📊 *Daily Report*" if now.hour == 21 else "📊 *Update Report*"
         send_telegram(
-            f"📊 *Daily Report — {now.strftime('%d/%m/%Y')}*\n"
-            f"Trade hari ini: {daily_trades}x\n"
-            f"Profit hari ini: {emoji} {fmt(daily_profit)}\n"
+            f"{label_report} — {now.strftime('%d/%m/%Y %H:%M')} WIB\n"
+            f"Trade: {daily_trades}x\n"
+            f"Profit: {emoji} {fmt(daily_profit)}\n"
             f"Total Profit: {fmt(total_profit)}\n"
             f"Modal: {fmt(modal)}\n"
             f"Posisi aktif: {posisi_aktif}/{MAX_TRADES}\n"
             f"😱 Fear & Greed: {fg_value} ({fg_label})\n"
             f"Total Trade: {total_trades}"
         )
-        daily_profit = 0.0
-        daily_trades = 0
-        log("📊 Daily summary terkirim!")
+        if now.hour == 21:
+            daily_profit = 0.0
+            daily_trades = 0
+            log("📊 Daily summary terkirim & reset!")
+        else:
+            log(f"📊 Update report jam {now.hour}:00 terkirim!")
 
 # ── Indodax API ────────────────────────────────────────
 def indodax_request(method, params=None):
@@ -588,6 +593,8 @@ def check_presike_entry(pair_id):
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
+    if bypass_ai:
+        desc = "BYPASS_AI|" + desc
     log(f"🐋 Pre-Spike detected: {pair_labels.get(pair_id, pair_id)} | {desc}")
     return True, ob_tier, sinyal, desc
 
@@ -621,13 +628,7 @@ def check_spike_alerts():
 
             label = pair_labels.get(pair_id, pair_id)
             spike_notified[pair_id] = now
-            log(f"🚀 SPIKE ALERT: {label} naik {change_pct:.1f}% dalam 1 jam!")
-            send_telegram(
-                f"🚀 *SPIKE ALERT!*\n"
-                f"*{label}* naik *{change_pct:.1f}%* dalam 1 jam!\n"
-                f"Harga sekarang: {fmt(price_now)}\n"
-                f"Pantau peluang pullback — bot akan beli kalau ada sinyal! 👀"
-            )
+            log(f"🚀 SPIKE ALERT: {label} naik {change_pct:.1f}% dalam 1 jam! (log only)")
 
 
 def check_signals(pair_id):
@@ -1223,17 +1224,21 @@ def bot_tick():
         ai_score, ai_summary = claude_analyze(pair_id, count, reasons, details)
 
         # Pre-spike entry pakai AI threshold 50%, standard/momentum pakai AI_MIN_SCORE
-        ai_threshold = 50 if entry_type == "presike" else AI_MIN_SCORE
-
-        if ai_score < ai_threshold:
-            log(f"🔴 AI skip {label} | Skor: {ai_score}% < {ai_threshold}%")
-            continue
+        # Pre-spike: bypass AI kalau volume IDR sangat besar (tier 2-3)
+        if entry_type == "presike" and momentum_desc.startswith("BYPASS_AI|"):
+            log(f"🐋 Pre-Spike BYPASS AI — volume besar, langsung beli {label}!")
+        else:
+            ai_threshold = 50 if entry_type == "presike" else AI_MIN_SCORE
+            if ai_score < ai_threshold:
+                log(f"🔴 AI skip {label} | Skor: {ai_score}% < {ai_threshold}%")
+                continue
 
         price = prices.get(pair_id, 0)
         qty   = idr_per_trade / price
 
         if entry_type == "presike":
-            reason = f"🐋 PRE-SPIKE | {momentum_desc}"
+            clean_desc = momentum_desc.replace("BYPASS_AI|", "")
+            reason = f"🐋 PRE-SPIKE | {clean_desc}"
         elif entry_type == "momentum":
             reason = f"🚀 MOMENTUM [{count}/17] {momentum_desc}"
         else:
