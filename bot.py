@@ -593,6 +593,7 @@ def check_presike_entry(pair_id):
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
+    bypass_ai = ob_tier >= 2  # bypass AI kalau volume tier 2 atau 3
     if bypass_ai:
         desc = "BYPASS_AI|" + desc
     log(f"🐋 Pre-Spike detected: {pair_labels.get(pair_id, pair_id)} | {desc}")
