@@ -23,12 +23,12 @@ MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "450"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "15"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "65"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 5
+SCAN_INTERVAL = 15
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
