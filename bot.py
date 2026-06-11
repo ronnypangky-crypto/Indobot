@@ -16,7 +16,7 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "4000"))
+TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "3000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
@@ -28,7 +28,7 @@ BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 40
+SCAN_INTERVAL = 5
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
