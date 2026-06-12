@@ -333,6 +333,7 @@ def fetch_prices():
     except Exception as e:
         log(f"⚠️ Gagal refresh harga: {e}")
         
+
 # ── Get Current Price (Real-time) ──────────────────────
 def get_current_price(pair_id):
     """Fetch harga terbaru dari Indodax untuk cek slippage"""
@@ -344,13 +345,13 @@ def get_current_price(pair_id):
             return float(tickers[pair_id].get("last", 0))
     except Exception as e:
         log(f"⚠️ Gagal fetch current price {pair_id}: {e}")
-    return prices.get(pair_id, 0)  # fallback ke cached price
+    return prices.get(pair_id, 0)
 
 def check_slippage(pair_id, scan_price):
     """Check apakah harga berubah > SLIPPAGE_TOLERANCE sejak scan"""
     current_price = get_current_price(pair_id)
     if current_price <= 0 or scan_price <= 0:
-        return True, 0  # allow jika tidak bisa fetch
+        return True, 0
     
     slippage_pct = abs(current_price - scan_price) / scan_price * 100
     is_acceptable = slippage_pct <= SLIPPAGE_TOLERANCE
@@ -360,7 +361,6 @@ def check_slippage(pair_id, scan_price):
         log(f"⚠️ SLIPPAGE REJECT {label}: scan={scan_price}, current={current_price}, slippage={slippage_pct:.2f}% > {SLIPPAGE_TOLERANCE}%")
     
     return is_acceptable, slippage_pct
-
 # ── Indikator ──────────────────────────────────────────
 def calc_ema(arr, period):
     if len(arr) < period:
