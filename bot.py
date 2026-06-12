@@ -28,8 +28,9 @@ BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 15
+SCAN_INTERVAL = 10
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
+SLIPPAGE_TOLERANCE = float(os.environ.get("SLIPPAGE_TOLERANCE", "2.0"))  # % tolerance untuk price slippage
 
 INDODAX_TAPI = "https://indodax.com/tapi"
 
@@ -331,6 +332,33 @@ def fetch_prices():
                 volume_history[pair_id].pop(0)
     except Exception as e:
         log(f"⚠️ Gagal refresh harga: {e}")
+        # ── Get Current Price (Real-time) ──────────────────────
+def get_current_price(pair_id):
+    """Fetch harga terbaru dari Indodax untuk cek slippage"""
+    try:
+        r = requests.get("https://indodax.com/api/summaries", timeout=10)
+        d = r.json()
+        tickers = d.get("tickers", {})
+        if pair_id in tickers:
+            return float(tickers[pair_id].get("last", 0))
+    except Exception as e:
+        log(f"⚠️ Gagal fetch current price {pair_id}: {e}")
+    return prices.get(pair_id, 0)  # fallback ke cached price
+
+def check_slippage(pair_id, scan_price):
+    """Check apakah harga berubah > SLIPPAGE_TOLERANCE sejak scan"""
+    current_price = get_current_price(pair_id)
+    if current_price <= 0 or scan_price <= 0:
+        return True, 0  # allow jika tidak bisa fetch
+    
+    slippage_pct = abs(current_price - scan_price) / scan_price * 100
+    is_acceptable = slippage_pct <= SLIPPAGE_TOLERANCE
+    
+    label = pair_labels.get(pair_id, pair_id)
+    if not is_acceptable:
+        log(f"⚠️ SLIPPAGE REJECT {label}: scan={scan_price}, current={current_price}, slippage={slippage_pct:.2f}% > {SLIPPAGE_TOLERANCE}%")
+    
+    return is_acceptable, slippage_pct
 
 # ── Indikator ──────────────────────────────────────────
 def calc_ema(arr, period):
@@ -970,6 +998,12 @@ def place_buy(pair_id, price, idr_amount):
         "type":  "buy",
         "price": str(market_price),
         "idr":   str(int(idr_amount)),
+ # Check slippage sebelum execute
+scan_price = prices.get(pair_id, 0)
+is_acceptable, slippage = check_slippage(pair_id, scan_price)
+if not is_acceptable:
+    log(f"❌ BUY REJECTED {pair_labels.get(pair_id, pair_id)} - slippage {slippage:.2f}% > {SLIPPAGE_TOLERANCE}%")
+    return False       
     })
 
 def place_sell(pair_id, price, qty_to_sell):
@@ -997,6 +1031,12 @@ def place_sell(pair_id, price, qty_to_sell):
             "type":    "sell",
             "price":   str(market_price),
             coin_key:  qty_str_int,
+# Check slippage sebelum execute
+scan_price = prices.get(pair_id, 0)
+is_acceptable, slippage = check_slippage(pair_id, scan_price)
+if not is_acceptable:
+    log(f"❌ SELL REJECTED {pair_labels.get(pair_id, pair_id)} - slippage {slippage:.2f}% > {SLIPPAGE_TOLERANCE}%")
+    return False            
         })
     return result
 
