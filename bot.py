@@ -21,7 +21,7 @@ TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "450"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "100"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "15"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "65"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
@@ -332,6 +332,7 @@ def fetch_prices():
                 volume_history[pair_id].pop(0)
     except Exception as e:
         log(f"⚠️ Gagal refresh harga: {e}")
+
 # ── Get Current Price (Real-time) ──────────────────────
 def get_current_price(pair_id):
     """Fetch harga terbaru dari Indodax untuk cek slippage"""
@@ -359,6 +360,7 @@ def check_slippage(pair_id, scan_price):
         log(f"⚠️ SLIPPAGE REJECT {label}: scan={scan_price}, current={current_price}, slippage={slippage_pct:.2f}% > {SLIPPAGE_TOLERANCE}%")
     
     return is_acceptable, slippage_pct
+
 # ── Indikator ──────────────────────────────────────────
 def calc_ema(arr, period):
     if len(arr) < period:
