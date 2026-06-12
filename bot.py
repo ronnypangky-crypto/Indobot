@@ -332,8 +332,6 @@ def fetch_prices():
                 volume_history[pair_id].pop(0)
     except Exception as e:
         log(f"⚠️ Gagal refresh harga: {e}")
-        
-
 # ── Get Current Price (Real-time) ──────────────────────
 def get_current_price(pair_id):
     """Fetch harga terbaru dari Indodax untuk cek slippage"""
