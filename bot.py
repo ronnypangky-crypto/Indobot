@@ -22,13 +22,13 @@ HARD_STOP    = float(os.environ.get("HARD_STOP", "3.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
-MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "15"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "65"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "12"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 10
+SCAN_INTERVAL = 8
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
@@ -998,6 +998,28 @@ def place_sell(pair_id, price, qty_to_sell):
             "price":   str(market_price),
             coin_key:  qty_str_int,
         })
+
+    # ── Verifikasi order benar-benar terisi ──────────────
+    if result and result.get("success") == 1:
+        order_id = result.get("return", {}).get("order_id")
+        if order_id:
+            # Ada order_id → order terpasang tapi belum tentu filled
+            # Tunggu sebentar lalu cek balance
+            time.sleep(2)
+            new_qty, _ = get_coin_balance(coin)
+            if new_qty >= actual_qty * 0.95:
+                # Balance tidak berkurang → order belum terisi → cancel!
+                log(f"⚠️ SELL {pair_id} order terpasang tapi belum filled → cancel!")
+                indodax_request("cancelOrder", {
+                    "pair":     pair_id,
+                    "order_id": str(order_id),
+                    "type":     "sell",
+                })
+                return {"success": 0, "error": "Order tidak terisi, sudah di-cancel"}
+            else:
+                log(f"✅ SELL {pair_id} confirmed filled!")
+        else:
+            log(f"✅ SELL {pair_id} langsung terisi (market)")
     return result
 
 # ── Cancel open orders ─────────────────────────────────
