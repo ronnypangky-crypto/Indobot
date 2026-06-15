@@ -19,8 +19,8 @@ CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "3000"))
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "0.5"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "1.5"))
-MAX_MODAL    = float(os.environ.get("MAX_MODAL", "100000"))
-MAX_TRADES   = int(os.environ.get("MAX_TRADES", "1"))
+MAX_MODAL    = float(os.environ.get("MAX_MODAL", "200000"))
+MAX_TRADES   = int(os.environ.get("MAX_TRADES", "2"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "20"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "13"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
@@ -1120,8 +1120,9 @@ def bot_tick():
         idr_in    = pos["idr"]
         label     = pair_labels.get(pair_id, pair_id)
         curr      = prices.get(pair_id, buy_price)
-        pl        = (curr - buy_price) * qty
-        pl_pct    = (curr - buy_price) / buy_price * 100
+        sell_price_est = curr * 0.97  # estimasi harga jual actual
+        pl        = (sell_price_est - buy_price) * qty
+        pl_pct    = (sell_price_est - buy_price) / buy_price * 100
 
         if curr > pos["peak_price"]:
             open_positions[pair_id]["peak_price"] = curr
@@ -1188,8 +1189,9 @@ def bot_tick():
                 if not result.get("zero_balance"):
                     log(f"{sell_reason} | {label} | P/L:{fmt(pl)}")
                     sold_prices[pair_id] = curr
+                    actual_sell = curr * 0.97
                     fee_beli  = idr_in * 0.003
-                    fee_jual  = (curr * qty) * 0.003
+                    fee_jual  = (actual_sell * qty) * 0.003
                     pl_bersih = pl - fee_beli - fee_jual
                     if pl > 0:
                         win_streak += 1
@@ -1272,7 +1274,7 @@ def bot_tick():
             get_idr_balance()
             total_trades += 1
             open_positions[pair_id] = {
-                "buy_price":      price,
+                "buy_price":      int(price * 1.03),  # harga beli actual
                 "qty":            qty,
                 "idr":            idr_per_trade,
                 "peak_price":     price,
