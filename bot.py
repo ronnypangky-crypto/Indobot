@@ -1357,6 +1357,223 @@ def bot_tick():
             log(f"⚠️ Gagal beli {label}: {result}")
 
 # ── Main ───────────────────────────────────────────────
+# ── Telegram Command Handler ───────────────────────────
+last_update_id  = 0
+bot_paused      = False
+pending_cmd     = {}  # {chat_id: {action, pair, price}}
+
+def get_tg_updates():
+    global last_update_id
+    try:
+        r = requests.get(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            params={"offset": last_update_id + 1, "timeout": 5},
+            timeout=10
+        )
+        data = r.json()
+        if data.get("ok"):
+            return data.get("result", [])
+    except:
+        pass
+    return []
+
+def analisa_coin(pair_id):
+    """Analisa kondisi market untuk pair tertentu"""
+    label = pair_id.replace("_idr", "").upper()
+    try:
+        r = requests.get(f"https://indodax.com/api/ticker/{pair_id}", timeout=10)
+        ticker = r.json().get("ticker", {})
+        if not ticker:
+            return None, f"❌ Gagal ambil data {label}"
+
+        last   = float(ticker.get("last", 0))
+        high   = float(ticker.get("high", 0))
+        low    = float(ticker.get("low", 0))
+        vol    = float(ticker.get("vol_idr", 0))
+        buy    = float(ticker.get("buy", 0))
+        sell   = float(ticker.get("sell", 0))
+        spread = (sell - buy) / buy * 100 if buy > 0 else 0
+        pos_hl = (last - low) / (high - low) * 100 if high != low else 50
+
+        if pos_hl < 30:
+            kondisi = "🟢 Dekat LOW — peluang beli bagus"
+        elif pos_hl > 70:
+            kondisi = "🔴 Dekat HIGH — risiko tinggi"
+        else:
+            kondisi = "🟡 Tengah range — netral"
+
+        spread_label = f"🔴 Spread {spread:.1f}% (tinggi)" if spread > 2 else f"🟢 Spread {spread:.1f}% (aman)"
+
+        report = (
+            f"📊 *Analisa {label}/IDR*\n"
+            f"💰 Harga: {fmt(last)}\n"
+            f"📈 High 24j: {fmt(high)}\n"
+            f"📉 Low 24j: {fmt(low)}\n"
+            f"📍 Posisi: {pos_hl:.0f}% dari range\n"
+            f"📦 Volume 24j: {fmt(vol)}\n"
+            f"🔀 {spread_label}\n"
+            f"📌 {kondisi}\n"
+            f"💵 Saldo IDR: {fmt(modal)}\n\n"
+            f"Ketik /ok untuk konfirmasi atau /batal untuk cancel"
+        )
+        return last, report
+    except Exception as e:
+        return None, f"❌ Error analisa {label}: {e}"
+
+def handle_tg_command(text, chat_id):
+    global bot_paused, pending_cmd, AI_MIN_SCORE, TAKE_PROFIT, TRAIL_PCT, HARD_STOP, MAX_TRADES, SCAN_INTERVAL
+
+    text = text.strip().lower()
+
+    if text == "/status":
+        posisi = len(open_positions)
+        status = "⏸️ PAUSED" if bot_paused else "▶️ AUTO"
+        send_telegram(
+            f"🤖 *IndoBot v9 Status*\n"
+            f"Mode: {status}\n"
+            f"💵 Saldo IDR: {fmt(modal)}\n"
+            f"📊 Posisi: {posisi}/{MAX_TRADES}\n"
+            f"🧠 AI Score: {AI_MIN_SCORE}%\n"
+            f"🎯 Take Profit: {fmt(TAKE_PROFIT)}\n"
+            f"📉 Trail: {TRAIL_PCT}%\n"
+            f"🛑 Hard Stop: {HARD_STOP}%\n"
+            f"⏱️ Scan: {SCAN_INTERVAL}s\n\n"
+            f"*Command:*\n"
+            f"/beli COIN — analisa + beli manual\n"
+            f"/jual COIN — analisa + jual manual\n"
+            f"/set AI\\_MIN\\_SCORE 70 — ubah setting\n"
+            f"/pause — pause auto trading\n"
+            f"/resume — hidupkan auto trading\n"
+            f"/batal — cancel aksi"
+        )
+
+    elif text == "/pause":
+        pending_cmd[chat_id] = {"action": "pause"}
+        send_telegram("⚠️ *Pause auto trading?*\nKetik /ok untuk konfirmasi atau /batal untuk cancel")
+
+    elif text == "/resume":
+        pending_cmd[chat_id] = {"action": "resume"}
+        send_telegram("▶️ *Resume auto trading?*\nKetik /ok untuk konfirmasi atau /batal untuk cancel")
+
+    elif text.startswith("/set "):
+        parts = text.split()
+        if len(parts) == 3:
+            key   = parts[1].upper()
+            value = parts[2]
+            pending_cmd[chat_id] = {"action": "set", "key": key, "value": value}
+            send_telegram(
+                f"⚙️ *Ubah setting?*\n"
+                f"`{key}` = `{value}`\n\n"
+                f"Ketik /ok untuk konfirmasi atau /batal untuk cancel"
+            )
+        else:
+            send_telegram("Format: /set VARIABLE NILAI\nContoh: /set AI_MIN_SCORE 70")
+
+    elif text.startswith("/beli "):
+        pair = text.replace("/beli ", "").strip() + "_idr"
+        send_telegram(f"🔍 Menganalisa *{pair.replace('_idr','').upper()}*...")
+        price, report = analisa_coin(pair)
+        if price:
+            pending_cmd[chat_id] = {"action": "buy", "pair": pair, "price": price}
+        send_telegram(report)
+
+    elif text.startswith("/jual "):
+        pair = text.replace("/jual ", "").strip() + "_idr"
+        send_telegram(f"🔍 Menganalisa *{pair.replace('_idr','').upper()} untuk JUAL*...")
+        price, report = analisa_coin(pair)
+        if price:
+            pending_cmd[chat_id] = {"action": "sell", "pair": pair, "price": price}
+        send_telegram(report)
+
+    elif text == "/ok":
+        if chat_id not in pending_cmd:
+            send_telegram("❌ Tidak ada aksi yang menunggu konfirmasi.")
+            return
+
+        cmd = pending_cmd.pop(chat_id)
+
+        if cmd["action"] == "pause":
+            bot_paused = True
+            send_telegram("⏸️ *Auto trading di-PAUSE!*\nBot tidak akan beli coin baru.\nKetik /resume untuk hidupkan lagi.")
+
+        elif cmd["action"] == "resume":
+            bot_paused = False
+            send_telegram("▶️ *Auto trading di-RESUME!*\nBot aktif kembali.")
+
+        elif cmd["action"] == "set":
+            key   = cmd["key"]
+            value = cmd["value"]
+            try:
+                if key == "AI_MIN_SCORE":   AI_MIN_SCORE  = int(value)
+                elif key == "TAKE_PROFIT":  TAKE_PROFIT   = float(value)
+                elif key == "TRAIL_PCT":    TRAIL_PCT     = float(value)
+                elif key == "HARD_STOP":    HARD_STOP     = float(value)
+                elif key == "MAX_TRADES":   MAX_TRADES    = int(value)
+                elif key == "SCAN_INTERVAL": SCAN_INTERVAL = int(value)
+                else:
+                    send_telegram(f"❌ Variable `{key}` tidak dikenal!")
+                    return
+                send_telegram(f"✅ *Setting berhasil diubah!*\n`{key}` = `{value}`\nLangsung berlaku!")
+            except:
+                send_telegram(f"❌ Nilai `{value}` tidak valid untuk `{key}`!")
+
+        elif cmd["action"] == "buy":
+            pair   = cmd["pair"]
+            label  = pair.replace("_idr", "").upper()
+            amount = modal * 0.9
+            price  = int(cmd["price"] * 1.03)
+            send_telegram(f"⚡ Eksekusi BELI *{label}* @ {fmt(price)}\nModal: {fmt(amount)}")
+            result = place_buy(pair, cmd["price"], amount)
+            if result and result.get("success") == 1:
+                send_telegram(f"✅ *BELI {label} BERHASIL!*")
+            else:
+                err = result.get("error", "Unknown") if result else "No response"
+                send_telegram(f"❌ *BELI {label} GAGAL!*\nError: {err}")
+
+        elif cmd["action"] == "sell":
+            pair  = cmd["pair"]
+            label = pair.replace("_idr", "").upper()
+            price = cmd["price"]
+            result = place_sell(pair, price, 999999)
+            if result and result.get("success") == 1:
+                send_telegram(f"✅ *JUAL {label} BERHASIL!*")
+            else:
+                err = result.get("error", "Unknown") if result else "No response"
+                send_telegram(f"❌ *JUAL {label} GAGAL!*\nError: {err}")
+
+    elif text == "/batal":
+        if chat_id in pending_cmd:
+            pending_cmd.pop(chat_id)
+            send_telegram("✅ Aksi dibatalkan.")
+        else:
+            send_telegram("Tidak ada aksi yang perlu dibatalkan.")
+
+    else:
+        send_telegram(
+            f"❓ Command tidak dikenal.\n\n"
+            f"*Command tersedia:*\n"
+            f"/status — cek status bot\n"
+            f"/beli COIN — analisa + beli\n"
+            f"/jual COIN — analisa + jual\n"
+            f"/set AI\\_MIN\\_SCORE 70 — ubah setting\n"
+            f"/pause — pause auto trading\n"
+            f"/resume — hidupkan auto trading\n"
+            f"/batal — cancel aksi"
+        )
+
+def check_tg_commands():
+    """Check dan handle command dari Telegram"""
+    updates = get_tg_updates()
+    for update in updates:
+        global last_update_id
+        last_update_id = update["update_id"]
+        msg  = update.get("message", {})
+        text = msg.get("text", "")
+        chat_id = str(msg.get("chat", {}).get("id", ""))
+        if text and text.startswith("/") and chat_id == str(TELEGRAM_CHAT_ID):
+            log(f"📱 Command: {text}")
+            handle_tg_command(text, chat_id)
+
 def main():
     log("🚀 IndoBot v9 AI dimulai...")
 
@@ -1397,8 +1614,12 @@ def main():
 
     while True:
         try:
+            check_tg_commands()  # cek command dari Telegram
             fetch_prices()
-            bot_tick()
+            if not bot_paused:
+                bot_tick()
+            else:
+                log("⏸️ Bot paused — skip auto trading")
             time.sleep(SCAN_INTERVAL)
         except KeyboardInterrupt:
             send_telegram(
