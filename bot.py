@@ -17,18 +17,18 @@ TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
 TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "10000"))
-TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "2"))
-HARD_STOP    = float(os.environ.get("HARD_STOP", "6"))
+TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "3"))
+HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
 MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
-TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "100"))
-MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "15"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
+TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
+MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "24"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
 VOL_SPIKE    = float(os.environ.get("VOL_SPIKE", "3.0"))
-SCAN_INTERVAL = 60
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "60"))
 PRICE_SPIKE_PCT = float(os.environ.get("PRICE_SPIKE_PCT", "3.0"))  # skip kalau naik > 3% dalam 5 menit
 
 INDODAX_TAPI = "https://indodax.com/tapi"
@@ -106,6 +106,7 @@ def check_daily_summary():
             f"Total Trade: {total_trades}"
         )
         if now.hour == 21:
+            get_trade_history_report()  # kirim trade history saat daily report
             daily_profit = 0.0
             daily_trades = 0
             log("📊 Daily summary terkirim & reset!")
@@ -156,6 +157,60 @@ def get_coin_balance(coin):
             if val > 0:
                 return val, key
     return 0, coin
+# ── Trade History Report ───────────────────────────────
+def get_trade_history_report():
+    """Ambil history trade dari Indodax dan kirim ke Telegram"""
+    try:
+        result = indodax_request("tradeHistory", {
+            "count": 20,
+            "order": "desc"
+        })
+        if not result or result.get("success") != 1:
+            log("⚠️ Gagal ambil trade history")
+            return
+
+        trades = result.get("return", {}).get("trades", [])
+        if not trades:
+            send_telegram("📋 *Trade History*\nBelum ada trade hari ini.")
+            return
+
+        total_buy  = 0.0
+        total_sell = 0.0
+        trade_count = 0
+
+        lines = []
+        for t in trades[:10]:  # 10 trade terakhir
+            ttype  = t.get("type", "")
+            pair   = t.get("pair", "").replace("_idr", "").upper()
+            price  = float(t.get("price", 0))
+            amount = float(t.get("amount", 0))
+            value  = price * amount
+
+            if ttype == "buy":
+                total_buy += value
+                lines.append(f"🟢 BUY {pair} @ {fmt(price)} × {amount:.4f} = {fmt(value)}")
+            elif ttype == "sell":
+                total_sell += value
+                lines.append(f"🔴 SELL {pair} @ {fmt(price)} × {amount:.4f} = {fmt(value)}")
+            trade_count += 1
+
+        net = total_sell - total_buy
+        emoji = "🟢" if net >= 0 else "🔴"
+
+        report = "📋 *Trade History (10 terakhir)*\n"
+        report += "\n".join(lines[:10])
+        report += f"\n\n💰 Total Buy: {fmt(total_buy)}"
+        report += f"\n💰 Total Sell: {fmt(total_sell)}"
+        report += f"\n{emoji} Net: {fmt(net)}"
+        report += f"\n🏦 Modal IDR: {fmt(modal)}"
+
+        send_telegram(report)
+        log("📋 Trade history report terkirim!")
+
+    except Exception as e:
+        log(f"⚠️ Error trade history: {e}")
+
+
 
 # ── Format qty ─────────────────────────────────────────
 INTEGER_COINS = {
@@ -530,18 +585,24 @@ def is_price_spiking(pair_id):
 def check_presike_entry(pair_id):
     """
     Deteksi coin yang MUNGKIN mau spike:
-    1. Harga minimal (no upper limit) — catch semua altcoin
-    2. Volume mulai naik tapi harga belum bergerak banyak
-    3. Minimal 4/5 sinyal basic
+    1. Harga < Rp 10.000 (fokus altcoin murah)
+    2. Volume naik signifikan
+    3. RSI valid (> 0)
+    4. Minimal 3/5 sinyal basic
     """
     curr_price = prices.get(pair_id, 0)
-    if curr_price <= 0:
+    if curr_price <= 0 or curr_price > 10000:
         return False, 0, 0, ""
 
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
-    if len(hist) < 5 or len(vol_h) < 3:
+    if len(hist) < 15 or len(vol_h) < 5:  # butuh lebih banyak data
         return False, 0, 0, ""
+
+    # RSI harus valid (tidak 0 atau 100)
+    rsi = calc_rsi(hist)
+    if rsi <= 5 or rsi >= 95:
+        return False, 0, 0, ""  # RSI tidak valid, data kurang
 
     avg_vol  = sum(vol_h[:-1]) / (len(vol_h) - 1)
     curr_vol = vol_h[-1]
@@ -564,18 +625,15 @@ def check_presike_entry(pair_id):
 
     if len(hist) >= 5:
         price_change = (hist[-1] - hist[-5]) / hist[-5] * 100
-        # Pre-spike hanya terima kalau harga belum naik banyak (< 3%) dan tidak turun >5%
-        if price_change > 3:  # Sudah ketinggalan momentum
+        if price_change > 3:
             return False, 0, 0, ""
-        if price_change < -5:  # Terlalu turun, avoid buying at bottom loss
+        if price_change < -5:
             return False, 0, 0, ""
 
     sinyal = 0
     sinyal_list = []
 
-    rsi = calc_rsi(hist)
     if rsi < 50: sinyal += 1; sinyal_list.append(f"RSI={rsi:.0f}✅")
-
     if vol_ratio >= 1.5: sinyal += 1; sinyal_list.append(f"Vol{vol_ratio:.1f}x✅")
 
     macd, signal, _ = calc_macd(hist)
@@ -589,13 +647,11 @@ def check_presike_entry(pair_id):
         bw = (upper - lower) / mid * 100 if mid > 0 else 100
         if bw < 5.0: sinyal += 1; sinyal_list.append("BB Squeeze✅")
 
-    if sinyal < 4:
+    if sinyal < 3:
         return False, ob_tier, sinyal, ""
 
     desc = f"{ob_label} | {' | '.join(sinyal_list)}"
-    bypass_ai = ob_tier >= 2  # bypass AI kalau volume tier 2 atau 3
-    if bypass_ai:
-        desc = "BYPASS_AI|" + desc
+    # Tidak ada bypass AI — semua tier tetap perlu AI >= 50%
     log(f"🐋 Pre-Spike detected: {pair_labels.get(pair_id, pair_id)} | {desc}")
     return True, ob_tier, sinyal, desc
 
