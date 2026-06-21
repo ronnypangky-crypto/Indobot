@@ -16,7 +16,7 @@ SECRET_KEY   = os.environ.get("INDODAX_SECRET_KEY", "")
 TG_TOKEN     = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
-TAKE_PROFIT  = float(os.environ.get("TAKE_PROFIT", "10000"))
+TP_PCT       = float(os.environ.get("TP_PCT", "7"))  # Take Profit dalam % dari harga beli
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "3"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
@@ -1203,7 +1203,7 @@ def bot_tick():
         if entry_type_pos == "presike" and pl_pct >= 10:
             should_sell = True
             sell_reason = f"🐋 Pre-Spike TP {pl_pct:.1f}% | P/L:{fmt(pl)}"
-        elif pl >= TAKE_PROFIT and trail_drop >= effective_trail:
+        elif pl_pct >= TP_PCT and trail_drop >= effective_trail:
             should_sell = True
             sell_reason = f"💰 Profit {fmt(pl)} | ATR Trail {trail_drop:.1f}%"
         elif pl > (idr_in * 0.006) and has_exit:  # exit hanya kalau profit sudah nutup fee
@@ -1366,7 +1366,7 @@ def get_tg_updates():
     global last_update_id
     try:
         r = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates",
+            f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates",
             params={"offset": last_update_id + 1, "timeout": 5},
             timeout=10
         )
@@ -1421,7 +1421,7 @@ def analisa_coin(pair_id):
         return None, f"❌ Error analisa {label}: {e}"
 
 def handle_tg_command(text, chat_id):
-    global bot_paused, pending_cmd, AI_MIN_SCORE, TAKE_PROFIT, TRAIL_PCT, HARD_STOP, MAX_TRADES, SCAN_INTERVAL
+    global bot_paused, pending_cmd, AI_MIN_SCORE, TP_PCT, TRAIL_PCT, HARD_STOP, MAX_TRADES, SCAN_INTERVAL
 
     text = text.strip().lower()
 
@@ -1434,7 +1434,7 @@ def handle_tg_command(text, chat_id):
             f"💵 Saldo IDR: {fmt(modal)}\n"
             f"📊 Posisi: {posisi}/{MAX_TRADES}\n"
             f"🧠 AI Score: {AI_MIN_SCORE}%\n"
-            f"🎯 Take Profit: {fmt(TAKE_PROFIT)}\n"
+            f"🎯 Take Profit: {TP_PCT}%\n"
             f"📉 Trail: {TRAIL_PCT}%\n"
             f"🛑 Hard Stop: {HARD_STOP}%\n"
             f"⏱️ Scan: {SCAN_INTERVAL}s\n\n"
@@ -1505,7 +1505,7 @@ def handle_tg_command(text, chat_id):
             value = cmd["value"]
             try:
                 if key == "AI_MIN_SCORE":   AI_MIN_SCORE  = int(value)
-                elif key == "TAKE_PROFIT":  TAKE_PROFIT   = float(value)
+                elif key == "TP_PCT":       TP_PCT        = float(value)
                 elif key == "TRAIL_PCT":    TRAIL_PCT     = float(value)
                 elif key == "HARD_STOP":    HARD_STOP     = float(value)
                 elif key == "MAX_TRADES":   MAX_TRADES    = int(value)
@@ -1570,7 +1570,7 @@ def check_tg_commands():
         msg  = update.get("message", {})
         text = msg.get("text", "")
         chat_id = str(msg.get("chat", {}).get("id", ""))
-        if text and text.startswith("/") and chat_id == str(TELEGRAM_CHAT_ID):
+        if text and text.startswith("/") and chat_id == str(TG_CHAT_ID):
             log(f"📱 Command: {text}")
             handle_tg_command(text, chat_id)
 
@@ -1592,7 +1592,7 @@ def main():
     send_telegram(
         f"🚀 *IndoBot v9 AI AKTIF*\n"
         f"Modal: Auto dari Indodax (max {fmt(MAX_MODAL)})\n"
-        f"Take Profit: {fmt(TAKE_PROFIT)} per trade\n"
+        f"Take Profit: {TP_PCT}% per trade\n"
         f"Trailing Stop: {TRAIL_PCT}%\n"
         f"Hard Stop Loss: {HARD_STOP}%\n"
         f"Max Posisi: {MAX_TRADES} coin\n"
