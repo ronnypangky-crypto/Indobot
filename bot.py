@@ -20,10 +20,10 @@ TP_PCT       = float(os.environ.get("TP_PCT", "7"))  # Take Profit dalam % dari 
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "3"))
 HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
-MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
+MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "11"))
-AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "70"))
+AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "60"))
 BLACKLIST_HR = int(os.environ.get("BLACKLIST_HR", "24"))
 UPTREND_PCT  = float(os.environ.get("UPTREND_PCT", "50"))
 SELL_RETRY   = int(os.environ.get("SELL_RETRY", "3"))
@@ -715,8 +715,14 @@ def check_signals(pair_id):
     if price <= lower * 1.01: count += 1; reasons.append("BB✅")
 
     ema9 = calc_ema(hist, 9); ema21 = calc_ema(hist, 21)
+    # EMA 9/21 crossover strategy
+    ema9_prev  = calc_ema(hist[:-1], 9) if len(hist) > 1 else ema9
+    ema21_prev = calc_ema(hist[:-1], 21) if len(hist) > 1 else ema21
+    ema_cross_bull = ema9_prev <= ema21_prev and ema9 > ema21  # EMA 9 baru cross atas EMA 21
+    ema_cross_bear = ema9_prev >= ema21_prev and ema9 < ema21  # EMA 9 baru cross bawah EMA 21
     details["ema9"] = ema9; details["ema21"] = ema21
     if ema9 > ema21: count += 1; reasons.append("EMA↑✅")
+    if ema_cross_bull: count += 1; reasons.append("EMA Cross🔥✅")  # bonus: EMA 9 baru cross EMA 21
 
     if len(vol_h) >= 5 and vol_h[-1] > (sum(vol_h[:-1])/(len(vol_h)-1)) * 1.2:
         count += 1; reasons.append("Vol↑✅")
@@ -969,6 +975,17 @@ def check_exit_signal(pair_id):
         exit_signals.append("Harga turun 2x")
     alligator_bull, _ = calc_alligator(hist)
     if not alligator_bull: exit_signals.append("Alligator bearish")
+    # EMA 9/21 death cross → exit signal
+    if len(hist) > 21:
+        ema9  = calc_ema(hist, 9)
+        ema21 = calc_ema(hist, 21)
+        ema9_prev  = calc_ema(hist[:-1], 9)
+        ema21_prev = calc_ema(hist[:-1], 21)
+        if ema9_prev >= ema21_prev and ema9 < ema21:
+            exit_signals.append("EMA Death Cross⚠️")
+    # RSI < 50 konfirmasi bearish
+    if rsi < 50 and len(exit_signals) >= 1:
+        exit_signals.append(f"RSI={rsi:.0f} <50")
     return len(exit_signals) >= 2, " | ".join(exit_signals)
 
 # ── Pilih pair terbaik ─────────────────────────────────
@@ -1424,6 +1441,13 @@ def handle_tg_command(text, chat_id):
     global bot_paused, pending_cmd, AI_MIN_SCORE, TP_PCT, TRAIL_PCT, HARD_STOP, MAX_TRADES, SCAN_INTERVAL
 
     text = text.strip().lower()
+
+    # Alias command
+    if text == "/cancel": text = "/batal"
+    elif text == "/buy" or text.startswith("/buy "): 
+        text = text.replace("/buy", "/beli", 1)
+    elif text == "/sell" or text.startswith("/sell "):
+        text = text.replace("/sell", "/jual", 1)
 
     if text == "/status":
         posisi = len(open_positions)
