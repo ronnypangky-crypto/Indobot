@@ -18,9 +18,9 @@ TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID", "")
 CLAUDE_KEY   = os.environ.get("CLAUDE_API_KEY", "")
 TP_PCT       = float(os.environ.get("TP_PCT", "7"))  # Take Profit dalam % dari harga beli
 TRAIL_PCT    = float(os.environ.get("TRAIL_PCT", "3"))
-HARD_STOP    = float(os.environ.get("HARD_STOP", "6.0"))
+HARD_STOP    = float(os.environ.get("HARD_STOP", "5.0"))
 MAX_MODAL    = float(os.environ.get("MAX_MODAL", "2000000"))
-MAX_TRADES   = int(os.environ.get("MAX_TRADES", "5"))
+MAX_TRADES   = int(os.environ.get("MAX_TRADES", "3"))
 TOP_N_PAIRS  = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS  = int(os.environ.get("MIN_SIGNALS", "14"))
 AI_MIN_SCORE = int(os.environ.get("AI_MIN_SCORE", "50"))
@@ -623,11 +623,15 @@ def check_presike_entry(pair_id):
     else:
         return False, 0, 0, ""
 
-    if len(hist) >= 5:
-        price_change = (hist[-1] - hist[-5]) / hist[-5] * 100
-        if price_change > 3:
+    # Cek harga tidak sedang di pucuk
+    if len(hist) >= 10:
+        price_change_5m  = (hist[-1] - hist[-5])  / hist[-5]  * 100  # 5 menit
+        price_change_10m = (hist[-1] - hist[-10]) / hist[-10] * 100  # 10 menit
+        if price_change_5m > 2:   # sudah naik > 2% dalam 5 menit → di pucuk!
             return False, 0, 0, ""
-        if price_change < -5:
+        if price_change_10m > 3:  # sudah naik > 3% dalam 10 menit → terlambat!
+            return False, 0, 0, ""
+        if price_change_5m < -5:  # turun terlalu dalam → hindari
             return False, 0, 0, ""
 
     sinyal = 0
@@ -1479,19 +1483,7 @@ def handle_tg_command(text, chat_id):
         pending_cmd[chat_id] = {"action": "resume"}
         send_telegram("▶️ *Resume auto trading?*\nKetik /ok untuk konfirmasi atau /batal untuk cancel")
 
-    elif text.startswith("/set "):
-        parts = text.split()
-        if len(parts) == 3:
-            key   = parts[1].upper()
-            value = parts[2]
-            pending_cmd[chat_id] = {"action": "set", "key": key, "value": value}
-            send_telegram(
-                f"⚙️ *Ubah setting?*\n"
-                f"`{key}` = `{value}`\n\n"
-                f"Ketik /ok untuk konfirmasi atau /batal untuk cancel"
-            )
-        else:
-            send_telegram("Format: /set VARIABLE NILAI\nContoh: /set AI_MIN_SCORE 70")
+
 
     elif text.startswith("/beli "):
         pair = text.replace("/beli ", "").strip() + "_idr"
@@ -1524,22 +1516,7 @@ def handle_tg_command(text, chat_id):
             bot_paused = False
             send_telegram("▶️ *Auto trading di-RESUME!*\nBot aktif kembali.")
 
-        elif cmd["action"] == "set":
-            key   = cmd["key"]
-            value = cmd["value"]
-            try:
-                if key == "AI_MIN_SCORE":   AI_MIN_SCORE  = int(value)
-                elif key == "TP_PCT":       TP_PCT        = float(value)
-                elif key == "TRAIL_PCT":    TRAIL_PCT     = float(value)
-                elif key == "HARD_STOP":    HARD_STOP     = float(value)
-                elif key == "MAX_TRADES":   MAX_TRADES    = int(value)
-                elif key == "SCAN_INTERVAL": SCAN_INTERVAL = int(value)
-                else:
-                    send_telegram(f"❌ Variable `{key}` tidak dikenal!")
-                    return
-                send_telegram(f"✅ *Setting berhasil diubah!*\n`{key}` = `{value}`\nLangsung berlaku!")
-            except:
-                send_telegram(f"❌ Nilai `{value}` tidak valid untuk `{key}`!")
+
 
         elif cmd["action"] == "buy":
             pair   = cmd["pair"]
