@@ -9,13 +9,13 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS", "300"))
-MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "3"))   # dari 5 sinyal utama
-MAX_TRADES    = int(os.environ.get("MAX_TRADES", "3"))
+MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "5"))   # dari 5 sinyal utama
+MAX_TRADES    = int(os.environ.get("MAX_TRADES", "5"))
 TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 96 jam
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR", "24")) # Blacklist 24 jam
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "15"))
 
 WIB = timezone(timedelta(hours=7))
 
@@ -153,6 +153,24 @@ def calc_bollinger(arr, period=20):
     return mid + 2*std, mid, mid - 2*std
 
 # ── 5 Sinyal Utama ──────────────────────────────────────
+
+def calc_alligator(arr):
+    """Williams Alligator — 3 smoothed moving averages"""
+    if len(arr) < 13:
+        return False, "Data kurang"
+    jaw   = calc_ema(arr, 13)  # Jaw (biru) — period 13
+    teeth = calc_ema(arr, 8)   # Teeth (merah) — period 8
+    lips  = calc_ema(arr, 5)   # Lips (hijau) — period 5
+    # Bullish: lips > teeth > jaw (mulut terbuka ke atas)
+    bullish = lips > teeth > jaw
+    # Bearish: lips < teeth < jaw (mulut terbuka ke bawah)
+    bearish = lips < teeth < jaw
+    if bullish:
+        return True, f"Alligator Bullish🐊✅"
+    elif bearish:
+        return False, f"Alligator Bearish🐊"
+    return False, f"Alligator Sideways"
+
 def check_signals(pair_id):
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
@@ -203,6 +221,12 @@ def check_signals(pair_id):
         sinyal += 1
         reasons.append("Harga>EMA21✅")
 
+    # 6. Alligator Bullish (bonus sinyal swing)
+    alligator_bull, alligator_desc = calc_alligator(hist)
+    if alligator_bull:
+        sinyal += 1
+        reasons.append(alligator_desc)
+
     return sinyal, reasons, details
 
 def check_exit_signal(pair_id):
@@ -219,6 +243,11 @@ def check_exit_signal(pair_id):
     # EMA Death Cross
     if ema9_prev >= ema21_prev and ema9 < ema21:
         exits.append("EMA Death Cross⚠️")
+
+    # Alligator Bearish
+    alligator_bull, alligator_desc = calc_alligator(hist)
+    if not alligator_bull:
+        exits.append(alligator_desc)
 
     # RSI < 50
     rsi = calc_rsi(hist)
@@ -339,6 +368,41 @@ def place_sell(pair_id, price, qty_to_sell):
     return result
 
 # ── Blacklist ────────────────────────────────────────────
+
+POSITIONS_FILE = "/tmp/positions.json"
+
+def save_positions():
+    """Simpan posisi ke file supaya tidak hilang saat restart"""
+    try:
+        import json
+        with open(POSITIONS_FILE, "w") as f:
+            json.dump(open_positions, f)
+        log("💾 Posisi tersimpan")
+    except Exception as e:
+        log(f"⚠️ Gagal simpan posisi: {e}")
+
+def load_positions():
+    """Load posisi dari file saat startup"""
+    global open_positions
+    try:
+        import json, os
+        if os.path.exists(POSITIONS_FILE):
+            with open(POSITIONS_FILE, "r") as f:
+                open_positions = json.load(f)
+            if open_positions:
+                log(f"📂 Restored {len(open_positions)} posisi dari file")
+                pos_list = ""
+                for pid, pos in open_positions.items():
+                    label = pair_labels.get(pid, pid)
+                    hours = (time.time() - pos.get("entry_time", time.time())) / 3600
+                    pos_list += f"  • {label} — hold {hours:.1f}j\n"
+                send_telegram(
+                    f"📂 *Posisi Restored:*\n{pos_list}"
+                    f"Total: {len(open_positions)} posisi"
+                )
+    except Exception as e:
+        log(f"⚠️ Gagal load posisi: {e}")
+
 def add_blacklist(pair_id):
     blacklist[pair_id] = time.time()
     label = pair_labels.get(pair_id, pair_id)
@@ -540,6 +604,7 @@ def manage_positions():
                     f"Total Trade: {total_trades}"
                 )
                 del open_positions[pair_id]
+                save_positions()
 
                 if pl_bersih < 0:
                     add_blacklist(pair_id)
@@ -702,6 +767,7 @@ def handle_command(text, chat_id):
                     "peak":       curr,
                     "entry_time": time.time(),
                 }
+                save_positions()
                 send_telegram(
                     f"✅ *BELI {label} BERHASIL!*\n"
                     f"Harga: {fmt(curr)}\n"
@@ -755,6 +821,7 @@ def main():
     log("🚀 IndoBot v9 dimulai...")
     fetch_all_pairs()
     get_idr_balance()
+    load_positions()
 
     send_telegram(
         f"🚀 *IndoBot v9 AI AKTIF*\n"
