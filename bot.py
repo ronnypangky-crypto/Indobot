@@ -15,7 +15,7 @@ TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "48")) # Time Stop 48 jam
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR", "24")) # Blacklist 24 jam
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "60"))
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 
 WIB = timezone(timedelta(hours=7))
 
