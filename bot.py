@@ -15,7 +15,7 @@ TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 96 jam
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR", "24")) # Blacklist 24 jam
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "15"))
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 
 WIB = timezone(timedelta(hours=7))
 
@@ -403,7 +403,63 @@ def load_positions():
     except Exception as e:
         log(f"⚠️ Gagal load posisi: {e}")
 
-def add_blacklist(pair_id):
+def restore_from_wallet():
+    """Restore posisi dari wallet Indodax saat startup"""
+    global open_positions
+    try:
+        result = indodax_request("getInfo")
+        if not result or result.get("success") != 1:
+            return
+        balances = result.get("return", {}).get("balance", {})
+        restored = 0
+        for coin, qty in balances.items():
+            qty = float(qty)
+            if qty <= 0:
+                continue
+            if coin in ["idr", "usdt", "usdc"]:
+                continue
+            pair_id = f"{coin}_idr"
+            if pair_id in SKIP_PAIRS:
+                continue
+            if pair_id in open_positions:
+                continue
+            # Ambil harga sekarang
+            curr = prices.get(pair_id, 0)
+            if curr <= 0:
+                try:
+                    r = requests.get(f"https://indodax.com/api/ticker/{pair_id}", timeout=10)
+                    curr = float(r.json().get("ticker", {}).get("last", 0))
+                except:
+                    continue
+            if curr <= 0:
+                continue
+            idr_val = curr * qty
+            if idr_val < 5000:  # skip dust
+                continue
+            open_positions[pair_id] = {
+                "buy_price":  curr,  # estimasi harga beli = harga sekarang
+                "qty":        qty,
+                "idr":        idr_val,
+                "peak":       curr,
+                "entry_time": time.time(),
+            }
+            label = pair_labels.get(pair_id, f"{coin.upper()}/IDR")
+            log(f"📂 Restore: {label} | {qty:.4f} | ~{fmt(idr_val)}")
+            restored += 1
+
+        if restored > 0:
+            save_positions()
+            pos_list = ""
+            for pid, pos in open_positions.items():
+                label = pair_labels.get(pid, pid)
+                pos_list += f"  • {label}: ~{fmt(pos['idr'])}\n"
+            send_telegram(
+                f"📂 *Wallet Restored!*\n{pos_list}"
+                f"Total: {restored} posisi\n"
+                f"⚠️ Harga beli = harga sekarang (estimasi)"
+            )
+    except Exception as e:
+        log(f"⚠️ Gagal restore wallet: {e}")
     blacklist[pair_id] = time.time()
     label = pair_labels.get(pair_id, pair_id)
     log(f"🚫 Blacklist {label} {BLACKLIST_HR} jam")
@@ -820,8 +876,10 @@ def main():
     global bot_paused
     log("🚀 IndoBot v9 dimulai...")
     fetch_all_pairs()
+    fetch_prices()  # fetch harga dulu sebelum restore
     get_idr_balance()
     load_positions()
+    restore_from_wallet()  # restore coin yang ada di wallet
 
     send_telegram(
         f"🚀 *IndoBot v9 AI AKTIF*\n"
