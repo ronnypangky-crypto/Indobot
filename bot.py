@@ -363,7 +363,7 @@ def cleanup_pending():
         send_telegram(f"⏰ *Kandidat {label} expired* — tidak ada konfirmasi 10 menit, dilewati.")
         del pending_confirm[p]
 
-
+def scan_candidates():
     """Scan pair dan kirim kandidat terbaik ke Telegram untuk konfirmasi"""
     global modal
 
