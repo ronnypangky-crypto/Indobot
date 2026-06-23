@@ -10,7 +10,7 @@ API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "5"))   # dari 5 sinyal utama
-MAX_TRADES    = int(os.environ.get("MAX_TRADES", "5"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES", "3"))
 TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 96 jam
