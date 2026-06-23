@@ -13,9 +13,9 @@ MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "3"))   # dari 5 sinyal utama
 MAX_TRADES    = int(os.environ.get("MAX_TRADES", "3"))
 TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
-TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 48 jam
+TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "48")) # Time Stop 48 jam
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR", "24")) # Blacklist 24 jam
-SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
+SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "60"))
 
 WIB = timezone(timedelta(hours=7))
 
@@ -718,7 +718,10 @@ def handle_command(text, chat_id):
         if pending_confirm:
             pair_id = list(pending_confirm.keys())[0]
             pending_confirm.pop(pair_id)
-            send_telegram("✅ Aksi dibatalkan.")
+            label = pair_labels.get(pair_id, pair_id)
+            # Skip coin ini 1 jam supaya tidak muncul lagi segera
+            blacklist[pair_id] = time.time() - (BLACKLIST_HR - 1) * 3600
+            send_telegram(f"✅ *{label} dilewati* — tidak akan muncul 1 jam.")
         else:
             send_telegram("Tidak ada aksi yang perlu dibatalkan.")
 
