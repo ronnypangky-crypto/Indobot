@@ -10,7 +10,7 @@ API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS", "300"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "4"))   # dari 4 sinyal utama
-MAX_TRADES    = int(os.environ.get("MAX_TRADES", "3"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES", "10"))
 TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 96 jam
@@ -830,8 +830,11 @@ def handle_command(text, chat_id):
                 send_telegram(f"✅ *JUAL {label} BERHASIL!*")
                 if pair_id in open_positions:
                     del open_positions[pair_id]
+                    save_positions()
             else:
-                send_telegram(f"❌ *JUAL {label} GAGAL!*")
+                err = result.get("error", "Unknown") if result else "No response"
+                log(f"❌ JUAL {label} GAGAL: {err} | result: {result}")
+                send_telegram(f"❌ *JUAL {label} GAGAL!*\nError: {err}")
         else:
             curr   = confirm["price"]
             idr    = confirm["idr"]
