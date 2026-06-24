@@ -309,7 +309,10 @@ def get_idr_balance():
     global modal
     result = indodax_request("getInfo")
     if result and result.get("success") == 1:
-        modal = float(result.get("return", {}).get("balance", {}).get("idr", 0))
+        balances = result.get("return", {}).get("balance", {})
+        idr_raw = str(balances.get("idr", "0")).replace(",", "")
+        modal = float(idr_raw) if idr_raw else 0
+        log(f"💵 Balance IDR: {modal}")
     return modal
 
 # ── Buy/Sell ────────────────────────────────────────────
