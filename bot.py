@@ -9,8 +9,8 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS", "300"))
-MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "5"))   # dari 5 sinyal utama
-MAX_TRADES    = int(os.environ.get("MAX_TRADES", "3"))
+MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS", "4"))   # dari 4 sinyal utama
+MAX_TRADES    = int(os.environ.get("MAX_TRADES", "10"))
 TP_PCT        = float(os.environ.get("TP_PCT", "7"))       # Take Profit 7%
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT", "3"))    # Trailing Stop 3%
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR", "96")) # Time Stop 96 jam
@@ -172,60 +172,68 @@ def calc_alligator(arr):
     return False, f"Alligator Sideways"
 
 def check_signals(pair_id):
+    """
+    Swing trading entry logic:
+    1. RSI < 40 (oversold — koreksi sehat)
+    2. Harga dekat LOW 24j (< 35% dari range)
+    3. Alligator tidak bearish (masih ada harapan naik)
+    4. Spread < 2% (likuid)
+    """
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
-    if len(hist) < 26:
+    if len(hist) < 14:
         return 0, [], {}
 
-    sinyal = 0
+    sinyal  = 0
     reasons = []
     details = {}
 
-    # 1. EMA 9 > EMA 21 (trend naik)
-    ema9  = calc_ema(hist, 9)
-    ema21 = calc_ema(hist, 21)
-    ema9_prev  = calc_ema(hist[:-1], 9)
-    ema21_prev = calc_ema(hist[:-1], 21)
-    if ema9 > ema21:
-        sinyal += 1
-        reasons.append("EMA9>EMA21✅")
-        if ema9_prev <= ema21_prev:
-            reasons.append("EMA Cross🔥")
-    details["ema9"]  = ema9
-    details["ema21"] = ema21
-
-    # 2. RSI > 50 (momentum bullish)
-    rsi = calc_rsi(hist)
-    if rsi > 50:
-        sinyal += 1
-        reasons.append(f"RSI={rsi:.0f}✅")
-    details["rsi"] = rsi
-
-    # 3. MACD > Signal (momentum naik)
-    macd, signal, hist_val = calc_macd(hist)
-    if macd > signal:
-        sinyal += 1
-        reasons.append("MACD✅")
-    details["macd"] = macd
-
-    # 4. Volume naik (ada dorongan)
-    if len(vol_h) >= 5:
-        avg_vol = sum(vol_h[:-1]) / (len(vol_h) - 1)
-        if avg_vol > 0 and vol_h[-1] > avg_vol * 1.2:
-            sinyal += 1
-            reasons.append(f"Vol↑✅")
-
-    # 5. Harga di atas EMA 21 (konfirmasi trend)
     curr = hist[-1]
-    if curr > ema21:
-        sinyal += 1
-        reasons.append("Harga>EMA21✅")
 
-    # 6. Alligator Bullish (bonus sinyal swing)
+    # 1. RSI < 40 — oversold, kemungkinan balik naik
+    rsi = calc_rsi(hist)
+    details["rsi"] = rsi
+    if rsi < 40:
+        sinyal += 1
+        reasons.append(f"RSI={rsi:.0f}✅ (oversold)")
+    else:
+        return 0, [], details  # wajib oversold
+
+    # 2. Harga dekat Low 24j — beli murah
+    try:
+        r = requests.get(f"https://indodax.com/api/ticker/{pair_id}", timeout=5)
+        ticker = r.json().get("ticker", {})
+        high = float(ticker.get("high", curr))
+        low  = float(ticker.get("low", curr))
+        pos_hl = (curr - low) / (high - low) * 100 if high != low else 50
+        details["pos_hl"] = pos_hl
+        details["high"]   = high
+        details["low"]    = low
+        if pos_hl < 35:
+            sinyal += 1
+            reasons.append(f"Dekat LOW {pos_hl:.0f}%✅")
+        else:
+            return 0, [], details  # wajib dekat low
+    except:
+        return 0, [], details
+
+    # 3. Alligator tidak bearish
     alligator_bull, alligator_desc = calc_alligator(hist)
+    details["alligator"] = alligator_bull
     if alligator_bull:
         sinyal += 1
         reasons.append(alligator_desc)
+    else:
+        reasons.append("Alligator Sideways")
+
+    # 4. Volume tidak spike besar (belum pump)
+    if len(vol_h) >= 5:
+        avg_vol = sum(vol_h[:-1]) / (len(vol_h) - 1)
+        if avg_vol > 0:
+            vol_ratio = vol_h[-1] / avg_vol
+            if vol_ratio < 3:  # volume tidak sedang pump
+                sinyal += 1
+                reasons.append(f"Volume normal {vol_ratio:.1f}x✅")
 
     return sinyal, reasons, details
 
