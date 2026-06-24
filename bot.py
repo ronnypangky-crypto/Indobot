@@ -96,6 +96,16 @@ def indodax_request(method, params={}):
                 return val, key
     return 0, coin
 
+def get_coin_balance(coin):
+    result = indodax_request("getInfo")
+    if result and result.get("success") == 1:
+        balances = result.get("return", {}).get("balance", {})
+        for key in [coin, coin.lower(), coin.upper()]:
+            val = float(str(balances.get(key, "0")).replace(",", ""))
+            if val > 0:
+                return val, key
+    return 0, coin
+
 def format_qty(coin_key, qty):
     if coin_key.lower() in INTEGER_COINS:
         return str(int(qty))
@@ -497,7 +507,7 @@ def scan_candidates():
 
     get_idr_balance()
     idr_per_trade = modal / MAX_TRADES
-    if idr_per_trade < 10000:
+    if idr_per_trade < 3000:
         log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
         return
 
@@ -786,8 +796,18 @@ def handle_command(text, chat_id):
         pair = coin + "_idr"
         curr = prices.get(pair, 0)
         if curr <= 0:
-            send_telegram(f"❌ Coin {coin.upper()} tidak ditemukan!")
-            return
+            try:
+                r = requests.get(f"https://indodax.com/api/ticker/{pair}", timeout=10)
+                curr = float(r.json().get("ticker", {}).get("last", 0))
+            except:
+                curr = 0
+        if curr <= 0:
+            # Coba ambil dari wallet langsung
+            qty, coin_key = get_coin_balance(coin)
+            if qty <= 0:
+                send_telegram(f"❌ Coin {coin.upper()} tidak ditemukan atau saldo 0!")
+                return
+            curr = 1  # harga tidak diketahui, set 1 supaya bisa jual
         pending_confirm[pair] = {"price": curr, "action": "sell", "time": time.time()}
         send_telegram(
             f"🔔 *Manual Jual: {coin.upper()}/IDR*\n"
