@@ -88,15 +88,6 @@ def indodax_request(method, params={}):
         log(f"API Error: {e}")
         return None
 
-def get_idr_balance():
-    global modal
-    result = indodax_request("getInfo")
-    if result and result.get("success") == 1:
-        modal = float(result.get("return", {}).get("balance", {}).get("idr", 0))
-    return modal
-
-def get_coin_balance(coin):
-    result = indodax_request("getInfo")
     if result and result.get("success") == 1:
         balances = result.get("return", {}).get("balance", {})
         for key in [coin, coin.lower(), coin.upper()]:
