@@ -9,13 +9,18 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "3"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "5"))
 TP_PCT        = float(os.environ.get("TP_PCT",      "7"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "96"))
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "24"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
+MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "500000000"))  # min volume 500jt
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "10"))          # min harga Rp 10
+MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
+WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
+POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "60"))          # laporan posisi tiap 60 menit
 
 WIB = timezone(timedelta(hours=7))
 POSITIONS_FILE = "/tmp/positions.json"
@@ -43,7 +48,8 @@ total_profit   = 0.0
 total_trades   = 0
 daily_profit   = 0.0
 daily_trades   = 0
-last_summary   = ""
+last_summary         = ""
+last_position_report = 0
 all_pairs      = []
 pair_labels    = {}
 bot_paused     = False
@@ -202,6 +208,21 @@ def check_signals(pair_id):
     sinyal += 1
     reasons.append(f"Dekat LOW {pos_hl:.0f}%✅")
 
+    # Filter volume minimum
+    if vol_idr < MIN_VOL_IDR:
+        log(f"⏭️ {pair_id} volume terlalu kecil: {fmt(vol_idr)}")
+        return 0, [], details
+
+    # Filter spread maksimal
+    if spread > MAX_SPREAD:
+        log(f"⏭️ {pair_id} spread terlalu besar: {spread:.1f}%")
+        return 0, [], details
+
+    # Filter harga minimum
+    if curr < MIN_PRICE:
+        log(f"⏭️ {pair_id} harga terlalu murah: {fmt(curr)}")
+        return 0, [], details
+
     # 3. Alligator tidak bearish
     alligator_bull, alligator_desc = calc_alligator(hist)
     details["alligator"] = alligator_bull
@@ -323,7 +344,8 @@ def restore_from_wallet():
                 except: continue
             if curr <= 0: continue
             idr_val = curr * qty
-            if idr_val < 5000: continue  # skip dust
+            if idr_val < 10000: continue  # skip dust < Rp 10rb
+            if curr < MIN_PRICE: continue  # skip coin terlalu murah
             open_positions[pair_id] = {
                 "buy_price":  curr,
                 "qty":        qty,
@@ -500,6 +522,22 @@ def manage_positions():
         should_sell = False
         sell_reason = ""
 
+        # Warning 24 jam sebelum time stop
+        if TIME_STOP_HR - hours <= WARN_STOP_HR and not pos.get("warned"):
+            open_positions[pid]["warned"] = True
+            save_positions()
+            send_telegram(
+                f"⚠️ *Time Stop Warning: {label}*\n"
+                f"Posisi akan di-cut dalam {TIME_STOP_HR - hours:.0f} jam!\n"
+                f"P/L sekarang: {pl_pct:.1f}% ({fmt(pl_bersih)})\n"
+                f"Ketik /jual {pid.replace('_idr','')} kalau mau jual manual"
+            )
+
+        # Auto-extend time stop kalau harga mulai naik
+        if hours >= TIME_STOP_HR and pl_pct > -2 and pl_pct < 0:
+            open_positions[pid]["entry_time"] = time.time() - (TIME_STOP_HR - 12) * 3600
+            log(f"🔄 Auto-extend time stop {label} — harga mulai recovery")
+
         if pl_pct >= TP_PCT:
             should_sell = True
             sell_reason = f"🎯 TP +{pl_pct:.1f}%"
@@ -542,6 +580,29 @@ def manage_positions():
             log(f"📊 {label} | {fmt(curr)} | P/L:{pl_pct:.1f}% | Hold:{hours:.1f}j")
 
 # ── Daily Report ─────────────────────────────────────────
+def check_position_report():
+    """Kirim laporan posisi tiap POSITION_RPT menit"""
+    global last_position_report
+    if not open_positions:
+        return
+    if time.time() - last_position_report < POSITION_RPT * 60:
+        return
+    last_position_report = time.time()
+    now = datetime.now(WIB)
+    pos_list = ""
+    for pid, pos in open_positions.items():
+        curr  = prices.get(pid, pos["buy_price"])
+        pl_pct= (curr * 0.97 - pos["buy_price"]) / pos["buy_price"] * 100
+        hours = (time.time() - pos.get("entry_time", time.time())) / 3600
+        pl    = (curr * 0.97 - pos["buy_price"]) * pos["qty"]
+        emoji = "🟢" if pl_pct >= 0 else "🔴"
+        pos_list += f"{emoji} {pair_labels.get(pid, pid)}: {pl_pct:.1f}% ({fmt(pl)}) | {hours:.0f}j/{TIME_STOP_HR}j\n"
+    send_telegram(
+        f"📊 *Update Posisi — {now.strftime('%H:%M')} WIB*\n"
+        f"{pos_list}"
+        f"Modal IDR: {fmt(modal)}"
+    )
+
 def check_daily_report():
     global daily_profit, daily_trades, last_summary
     now      = datetime.now(WIB)
@@ -733,8 +794,8 @@ def handle_command(text, chat_id):
             f"/jual COIN — jual manual\n"
             f"/pause — pause bot\n"
             f"/resume — aktifkan bot\n"
-            f"/batal atau /cancel — cancel\n"
-            f"/skip COIN — skip coin tanpa jual (dust)"
+            f"/skip COIN — skip dust coin tanpa jual\n"
+            f"/batal atau /cancel — cancel aksi"
         )
 
 def check_tg_commands():
@@ -781,6 +842,7 @@ def main():
             if not bot_paused:
                 manage_positions()
                 scan_candidates()
+            check_position_report()
             check_daily_report()
             tick += 1
             time.sleep(SCAN_INTERVAL)
