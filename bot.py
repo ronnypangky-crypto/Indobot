@@ -2,6 +2,9 @@ import os, time, hmac, hashlib, requests, json
 from datetime import datetime, timezone, timedelta
 from urllib.parse import urlencode
 
+RAILWAY_TOKEN  = os.environ.get("RAILWAY_TOKEN", "")
+RAILWAY_SVC_ID = os.environ.get("RAILWAY_BOT_SERVICE_ID", "")
+
 # ── Config ─────────────────────────────────────────────
 TG_TOKEN      = os.environ.get("TELEGRAM_TOKEN", "")
 TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
@@ -9,7 +12,7 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "5"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "3"))
 TP_PCT        = float(os.environ.get("TP_PCT",      "7"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "96"))
@@ -299,28 +302,78 @@ def fetch_prices():
         log(f"⚠️ Gagal fetch prices: {e}")
 
 # ── Save/Load Posisi ────────────────────────────────────
+def save_to_railway(data_str):
+    """Simpan posisi ke Railway Variable sebagai backup permanen"""
+    if not RAILWAY_TOKEN or not RAILWAY_SVC_ID:
+        return
+    try:
+        mutation = """
+        mutation variableUpsert($input: VariableUpsertInput!) {
+            variableUpsert(input: $input)
+        }
+        """
+        requests.post(
+            "https://backboard.railway.app/graphql/v2",
+            headers={"Authorization": f"Bearer {RAILWAY_TOKEN}", "Content-Type": "application/json"},
+            json={"query": mutation, "variables": {"input": {
+                "serviceId": RAILWAY_SVC_ID,
+                "name": "POSITIONS_BACKUP",
+                "value": data_str
+            }}},
+            timeout=10
+        )
+        log("☁️ Posisi tersimpan ke Railway")
+    except Exception as e:
+        log(f"⚠️ Gagal simpan ke Railway: {e}")
+
 def save_positions():
     try:
+        # Simpan ke file lokal
         with open(POSITIONS_FILE, "w") as f:
             json.dump(open_positions, f)
+        # Backup ke Railway Variable
+        save_to_railway(json.dumps(open_positions))
     except Exception as e:
         log(f"⚠️ Gagal simpan posisi: {e}")
 
 def load_positions():
     global open_positions
+    loaded = False
+
+    # Coba load dari file lokal dulu
     try:
         if os.path.exists(POSITIONS_FILE):
             with open(POSITIONS_FILE, "r") as f:
-                open_positions = json.load(f)
-            if open_positions:
-                log(f"📂 Loaded {len(open_positions)} posisi dari file")
-                pos_list = "\n".join([
-                    f"• {pair_labels.get(p, p)}: hold {(time.time()-v.get('entry_time',time.time()))/3600:.1f}j"
-                    for p, v in open_positions.items()
-                ])
-                send_telegram(f"📂 *Posisi Restored:*\n{pos_list}")
+                data = json.load(f)
+            if data:
+                open_positions = data
+                loaded = True
+                log(f"📂 Loaded {len(open_positions)} posisi dari file lokal")
     except Exception as e:
-        log(f"⚠️ Gagal load posisi: {e}")
+        log(f"⚠️ Gagal load file lokal: {e}")
+
+    # Kalau file lokal kosong/tidak ada, coba dari Railway Variable
+    if not loaded:
+        backup = os.environ.get("POSITIONS_BACKUP", "")
+        if backup:
+            try:
+                data = json.loads(backup)
+                if data:
+                    open_positions = data
+                    loaded = True
+                    log(f"☁️ Loaded {len(open_positions)} posisi dari Railway backup!")
+            except Exception as e:
+                log(f"⚠️ Gagal load Railway backup: {e}")
+
+    if loaded and open_positions:
+        pos_list = "\n".join([
+            f"• {pair_labels.get(p, p)}: beli {fmt(v.get('buy_price',0))} | hold {(time.time()-v.get('entry_time',time.time()))/3600:.1f}j"
+            for p, v in open_positions.items()
+        ])
+        send_telegram(
+            f"📂 *Posisi Restored ({len(open_positions)} posisi):*\n{pos_list}\n"
+            f"⚠️ Harga beli & jam asli tersimpan!"
+        )
 
 def restore_from_wallet():
     """Restore coin dari wallet yang tidak ada di positions.json"""
