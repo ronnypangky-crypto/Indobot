@@ -13,7 +13,7 @@ API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
 MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "3"))
-TP_PCT        = float(os.environ.get("TP_PCT",      "7"))
+TP_PCT        = float(os.environ.get("TP_PCT",      "10"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "96"))
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "24"))
@@ -260,7 +260,7 @@ def check_exit(pair_id):
     if macd < signal: exits.append("MACD turun")
     alligator_bull, desc = calc_alligator(hist)
     if not alligator_bull: exits.append(desc)
-    return len(exits) >= 2, " | ".join(exits)
+    return len(exits) >= 3, " | ".join(exits)  # butuh 3 sinyal bearish untuk exit
 
 # ── Fetch Data ──────────────────────────────────────────
 def fetch_all_pairs():
@@ -597,7 +597,7 @@ def manage_positions():
         elif pl_pct > 0 and trail_drop >= TRAIL_PCT:
             should_sell = True
             sell_reason = f"📉 Trail -{trail_drop:.1f}%"
-        elif has_exit and pl > fee_est:
+        elif has_exit and pl_pct >= 3 and pl > fee_est:  # exit sinyal hanya kalau sudah profit 3%+
             should_sell = True
             sell_reason = f"📊 Exit: {exit_desc}"
         elif hours >= TIME_STOP_HR:
@@ -719,6 +719,7 @@ def handle_command(text, chat_id):
             f"*Command:*\n"
             f"/beli COIN — beli manual\n"
             f"/jual COIN — jual manual\n"
+            f"/skip COIN — hapus posisi tanpa jual (dust)\n"
             f"/pause — pause bot\n"
             f"/resume — aktifkan bot\n"
             f"/batal — cancel aksi"
