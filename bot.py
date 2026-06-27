@@ -166,15 +166,16 @@ def calc_alligator(arr):
 # ── Sinyal Entry Swing ──────────────────────────────────
 def check_signals(pair_id):
     """
-    4 sinyal swing trading:
+    5 sinyal swing trading:
     1. RSI < 40 (oversold) — WAJIB
     2. Harga < 35% dari range Low-High (dekat LOW) — WAJIB
-    3. Alligator tidak bearish
-    4. Volume tidak spike (belum pump)
+    3. Harga di atas EMA 50 (uptrend) — WAJIB
+    4. Alligator tidak bearish
+    5. Volume tidak spike (belum pump)
     """
     hist  = price_history.get(pair_id, [])
     vol_h = volume_history.get(pair_id, [])
-    if len(hist) < 14:
+    if len(hist) < 50:  # butuh minimal 50 candle untuk EMA 50
         return 0, [], {}
 
     curr    = hist[-1]
@@ -226,7 +227,16 @@ def check_signals(pair_id):
         log(f"⏭️ {pair_id} harga terlalu murah: {fmt(curr)}")
         return 0, [], details
 
-    # 3. Alligator tidak bearish
+    # 3. EMA 50 — harga harus di atas EMA 50 (uptrend) — WAJIB
+    ema50 = calc_ema(hist, 50)
+    details["ema50"] = ema50
+    if curr < ema50:
+        log(f"⏭️ {pair_id} di bawah EMA50 — downtrend, skip!")
+        return 0, [], details
+    sinyal += 1
+    reasons.append(f"EMA50✅ ({fmt(ema50)})")
+
+    # 4. Alligator tidak bearish
     alligator_bull, alligator_desc = calc_alligator(hist)
     details["alligator"] = alligator_bull
     if alligator_bull:
@@ -235,7 +245,7 @@ def check_signals(pair_id):
     else:
         reasons.append(alligator_desc)
 
-    # 4. Volume tidak spike (belum pump)
+    # 5. Volume tidak spike (belum pump)
     if len(vol_h) >= 5:
         avg_vol = sum(vol_h[:-1]) / (len(vol_h) - 1)
         if avg_vol > 0:
