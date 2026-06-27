@@ -730,6 +730,7 @@ def handle_command(text, chat_id):
             f"/beli COIN — beli manual\n"
             f"/jual COIN — jual manual\n"
             f"/skip COIN — hapus posisi tanpa jual (dust)\n"
+            f"/restore COIN HARGA — restore posisi harga asli\n"
             f"/pause — pause bot\n"
             f"/resume — aktifkan bot\n"
             f"/batal — cancel aksi"
@@ -832,6 +833,48 @@ def handle_command(text, chat_id):
             send_telegram(f"✅ *{pair_labels.get(pair, pair)} dilewati* — skip 1 jam.")
         else:
             send_telegram("Tidak ada aksi yang perlu dibatalkan.")
+
+    elif text.startswith("/restore "):
+        parts = text.split()
+        if len(parts) < 3:
+            send_telegram(
+                "Format: /restore COIN HARGA\\_BELI\n"
+                "Contoh: /restore ucjl 11381"
+            )
+            return
+        coin       = parts[1].strip()
+        pair       = coin + "_idr"
+        try:
+            buy_price  = float(parts[2])
+        except:
+            send_telegram("❌ Harga beli tidak valid!")
+            return
+        label = pair_labels.get(pair, f"{coin.upper()}/IDR")
+        # Ambil qty dari wallet
+        qty, coin_key = get_coin_balance(coin)
+        if qty <= 0:
+            send_telegram(f"❌ Saldo {coin.upper()} = 0 di wallet!")
+            return
+        idr_val = buy_price * qty
+        open_positions[pair] = {
+            "buy_price":  buy_price,
+            "qty":        qty,
+            "idr":        idr_val,
+            "peak":       buy_price,
+            "entry_time": time.time(),
+        }
+        save_positions()
+        curr    = prices.get(pair, buy_price)
+        pl_pct  = (curr * 0.97 - buy_price) / buy_price * 100
+        emoji   = "🟢" if pl_pct >= 0 else "🔴"
+        send_telegram(
+            f"✅ *{label} berhasil di-restore!*\n"
+            f"Qty: {qty:.4f}\n"
+            f"Harga beli: {fmt(buy_price)}\n"
+            f"Harga sekarang: {fmt(curr)}\n"
+            f"{emoji} P/L: {pl_pct:.1f}%\n"
+            f"TP: +{TP_PCT}% | Time Stop: {TIME_STOP_HR}j"
+        )
 
     elif text.startswith("/skip "):
         coin = text[6:].strip()
