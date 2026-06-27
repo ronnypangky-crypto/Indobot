@@ -845,7 +845,9 @@ def handle_command(text, chat_id):
         coin       = parts[1].strip()
         pair       = coin + "_idr"
         try:
-            buy_price  = float(parts[2])
+            # Bersihkan input harga - hapus titik/koma pemisah ribuan
+            price_str = parts[2].replace(".", "").replace(",", "")
+            buy_price = float(price_str)
         except:
             send_telegram("❌ Harga beli tidak valid!")
             return
