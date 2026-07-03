@@ -13,17 +13,17 @@ API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
 MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "8"))
-TP_PCT        = float(os.environ.get("TP_PCT",      "10"))
-TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
-TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "720"))
-BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "24"))
+TP_PCT        = float(os.environ.get("TP_PCT",      "20"))
+TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "5"))
+TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "26280"))
+BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
 MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "500000000"))  # min volume 500jt
 MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "10"))          # min harga Rp 10
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
-POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "60"))          # laporan posisi tiap 60 menit
+POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 30 menit
 
 WIB = timezone(timedelta(hours=7))
 POSITIONS_FILE = "/tmp/positions.json"
@@ -388,6 +388,10 @@ def load_positions():
 def restore_from_wallet():
     """Restore coin dari wallet yang tidak ada di positions.json"""
     global open_positions
+    # Kalau sudah ada posisi dari load_positions, skip restore wallet
+    if open_positions:
+        log(f"📂 Skip wallet restore — sudah ada {len(open_positions)} posisi dari backup")
+        return
     try:
         result = indodax_request("getInfo")
         if not result or result.get("success") != 1: return
@@ -407,20 +411,25 @@ def restore_from_wallet():
                 except: continue
             if curr <= 0: continue
             idr_val = curr * qty
-            if idr_val < 10000: continue  # skip dust < Rp 10rb
-            if curr < MIN_PRICE: continue  # skip coin terlalu murah
+            if idr_val < 10000: continue
+            if curr < MIN_PRICE: continue
             open_positions[pair_id] = {
                 "buy_price":  curr,
                 "qty":        qty,
                 "idr":        idr_val,
                 "peak":       curr,
                 "entry_time": time.time(),
+                "estimated":  True,  # tandai sebagai estimasi
             }
-            log(f"📂 Restore wallet: {pair_labels.get(pair_id, pair_id)} ~{fmt(idr_val)}")
+            log(f"📂 Restore wallet: {pair_labels.get(pair_id, pair_id)} ~{fmt(idr_val)} (estimasi)")
             restored += 1
         if restored > 0:
             save_positions()
-            send_telegram(f"📂 *{restored} posisi restored dari wallet!*")
+            send_telegram(
+                f"📂 *{restored} posisi restored dari wallet*\n"
+                f"⚠️ Harga beli = estimasi harga sekarang\n"
+                f"Gunakan /restore COIN HARGA untuk input harga beli asli!"
+            )
     except Exception as e:
         log(f"⚠️ Gagal restore wallet: {e}")
 
@@ -838,18 +847,17 @@ def handle_command(text, chat_id):
         parts = text.split()
         if len(parts) < 3:
             send_telegram(
-                "Format: /restore COIN HARGA\\_BELI\n"
-                "Contoh: /restore ucjl 11381"
+                "Format: /restore COIN TOTAL\\_IDR\n"
+                "Contoh: /restore hype 21210\n"
+                "(input total IDR yang dipakai beli, bukan harga per coin)"
             )
             return
-        coin       = parts[1].strip()
-        pair       = coin + "_idr"
+        coin = parts[1].strip()
+        pair = coin + "_idr"
         try:
-            # Bersihkan input harga - hapus titik/koma pemisah ribuan
-            price_str = parts[2].replace(".", "").replace(",", "")
-            buy_price = float(price_str)
+            total_idr = float(parts[2].replace(".", "").replace(",", ""))
         except:
-            send_telegram("❌ Harga beli tidak valid!")
+            send_telegram("❌ Total IDR tidak valid!")
             return
         label = pair_labels.get(pair, f"{coin.upper()}/IDR")
         # Ambil qty dari wallet
@@ -857,22 +865,29 @@ def handle_command(text, chat_id):
         if qty <= 0:
             send_telegram(f"❌ Saldo {coin.upper()} = 0 di wallet!")
             return
-        idr_val = buy_price * qty
+        # Hitung harga per coin dari total IDR
+        buy_price = total_idr / qty
+        curr      = prices.get(pair, 0)
+        if curr <= 0:
+            try:
+                r = requests.get(f"https://indodax.com/api/ticker/{pair}", timeout=10)
+                curr = float(r.json().get("ticker", {}).get("last", 0))
+            except: curr = buy_price
         open_positions[pair] = {
             "buy_price":  buy_price,
             "qty":        qty,
-            "idr":        idr_val,
-            "peak":       buy_price,
+            "idr":        total_idr,
+            "peak":       max(buy_price, curr),
             "entry_time": time.time(),
         }
         save_positions()
-        curr    = prices.get(pair, buy_price)
-        pl_pct  = (curr * 0.97 - buy_price) / buy_price * 100
-        emoji   = "🟢" if pl_pct >= 0 else "🔴"
+        pl_pct = (curr * 0.97 - buy_price) / buy_price * 100
+        emoji  = "🟢" if pl_pct >= 0 else "🔴"
         send_telegram(
             f"✅ *{label} berhasil di-restore!*\n"
-            f"Qty: {qty:.4f}\n"
-            f"Harga beli: {fmt(buy_price)}\n"
+            f"Qty: {qty:.6f}\n"
+            f"Total beli: {fmt(total_idr)}\n"
+            f"Harga per coin: {fmt(buy_price)}\n"
             f"Harga sekarang: {fmt(curr)}\n"
             f"{emoji} P/L: {pl_pct:.1f}%\n"
             f"TP: +{TP_PCT}% | Time Stop: {TIME_STOP_HR}j"
