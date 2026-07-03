@@ -664,7 +664,7 @@ def check_position_report():
     pos_list = ""
     for pid, pos in open_positions.items():
         curr  = prices.get(pid, pos["buy_price"])
-        pl_pct= (curr * 0.97 - pos["buy_price"]) / pos["buy_price"] * 100
+        pl_pct= (curr - pos["buy_price"]) / pos["buy_price"] * 100  # display tanpa fee
         hours = (time.time() - pos.get("entry_time", time.time())) / 3600
         pl    = (curr * 0.97 - pos["buy_price"]) * pos["qty"]
         emoji = "🟢" if pl_pct >= 0 else "🔴"
@@ -722,7 +722,7 @@ def handle_command(text, chat_id):
         pos_list = ""
         for pid, pos in open_positions.items():
             curr  = prices.get(pid, pos["buy_price"])
-            pl_pct= (curr * 0.97 - pos["buy_price"]) / pos["buy_price"] * 100
+            pl_pct= (curr - pos["buy_price"]) / pos["buy_price"] * 100  # display tanpa fee
             hours = (time.time() - pos.get("entry_time", time.time())) / 3600
             emoji = "🟢" if pl_pct >= 0 else "🔴"
             pos_list += f"{emoji} {pair_labels.get(pid, pid)}: {pl_pct:.1f}% ({hours:.1f}j)\n"
@@ -881,7 +881,7 @@ def handle_command(text, chat_id):
             "entry_time": time.time(),
         }
         save_positions()
-        pl_pct = (curr * 0.97 - buy_price) / buy_price * 100
+        pl_pct = (curr - buy_price) / buy_price * 100  # display tanpa fee
         emoji  = "🟢" if pl_pct >= 0 else "🔴"
         send_telegram(
             f"✅ *{label} berhasil di-restore!*\n"
