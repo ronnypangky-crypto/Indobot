@@ -12,10 +12,10 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "8"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "10"))
 TP_PCT        = float(os.environ.get("TP_PCT",      "20"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "5"))
-TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "26280"))
+TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hidup
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
@@ -23,7 +23,7 @@ MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "500000000"))  # min volume
 MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "10"))          # min harga Rp 10
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
-POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 30 menit
+POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 60 menit
 
 WIB = timezone(timedelta(hours=7))
 POSITIONS_FILE = "/tmp/positions.json"
@@ -385,6 +385,33 @@ def load_positions():
             f"⚠️ Harga beli & jam asli tersimpan!"
         )
 
+def get_buy_price_from_history(pair_id):
+    """Ambil harga beli terakhir dari trade history Indodax"""
+    try:
+        result = indodax_request("tradeHistory", {
+            "pair":  pair_id,
+            "count": "10",
+            "order": "desc"
+        })
+        if not result or result.get("success") != 1:
+            log(f"⚠️ tradeHistory {pair_id} gagal: {result}")
+            return 0, 0
+        trades = result.get("return", {}).get("trades", [])
+        if not trades:
+            log(f"⚠️ tradeHistory {pair_id} kosong")
+            return 0, 0
+        log(f"📋 tradeHistory {pair_id}: {len(trades)} trades, first: {trades[0]}")
+        for trade in trades:
+            if trade.get("type") == "buy":
+                price = float(str(trade.get("price", "0")).replace(",", ""))
+                qty   = float(str(trade.get("amount", "0")).replace(",", ""))
+                if price > 0 and qty > 0:
+                    log(f"📋 Harga beli asli {pair_id}: {fmt(price)} × {qty:.6f}")
+                    return price, qty
+    except Exception as e:
+        log(f"⚠️ Gagal ambil trade history {pair_id}: {e}")
+    return 0, 0
+
 def restore_from_wallet():
     """Restore coin dari wallet yang tidak ada di positions.json"""
     global open_positions
@@ -413,13 +440,19 @@ def restore_from_wallet():
             idr_val = curr * qty
             if idr_val < 10000: continue
             if curr < MIN_PRICE: continue
+
+            # Coba ambil harga beli asli dari trade history
+            real_price, _ = get_buy_price_from_history(pair_id)
+            buy_price = real_price if real_price > 0 else curr
+            idr_val   = buy_price * qty
+
             open_positions[pair_id] = {
-                "buy_price":  curr,
+                "buy_price":  buy_price,
                 "qty":        qty,
                 "idr":        idr_val,
-                "peak":       curr,
+                "peak":       max(buy_price, curr),
                 "entry_time": time.time(),
-                "estimated":  True,  # tandai sebagai estimasi
+                "estimated":  real_price <= 0,
             }
             log(f"📂 Restore wallet: {pair_labels.get(pair_id, pair_id)} ~{fmt(idr_val)} (estimasi)")
             restored += 1
@@ -507,7 +540,6 @@ def scan_candidates():
         return
 
     get_idr_balance()
-    slots_left    = MAX_TRADES - active
     idr_per_trade = modal / MAX_TRADES
     if idr_per_trade < 3000:
         log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
@@ -545,24 +577,36 @@ def scan_candidates():
     elif pos_hl > 70: kondisi = "🔴 Dekat HIGH — risiko tinggi"
     else:             kondisi = "🟡 Tengah range"
 
-    pending_confirm[pid] = {
-        "price": curr, "idr": idr_per_trade, "time": time.time()
-    }
+    log(f"🔔 Auto beli: {label} | {sinyal}/{MIN_SIGNALS} sinyal")
 
-    log(f"🔔 Kandidat: {label} | {sinyal}/{MIN_SIGNALS} sinyal")
-    send_telegram(
-        f"🔔 *Kandidat Beli: {label}*\n"
-        f"💰 Harga: {fmt(curr)}\n"
-        f"📉 Low: {fmt(low)} — 📈 High: {fmt(high)}\n"
-        f"🔀 Spread: {spread_label}\n"
-        f"📌 {kondisi}\n\n"
-        f"*Sinyal ({sinyal}/{MIN_SIGNALS}):*\n"
-        f"{' | '.join(reasons)}\n"
-        f"RSI: {rsi:.0f}\n\n"
-        f"Modal: {fmt(idr_per_trade)} | TP: +{TP_PCT}% | Trail: {TRAIL_PCT}%\n"
-        f"Time Stop: {TIME_STOP_HR} jam\n\n"
-        f"Ketik /ok untuk beli atau /batal untuk skip"
-    )
+    # Auto buy langsung tanpa konfirmasi
+    result = place_buy(pid, curr, idr_per_trade)
+    if result and result.get("success") == 1:
+        qty = idr_per_trade / (curr * 1.03)
+        open_positions[pid] = {
+            "buy_price":  int(curr * 1.03),
+            "qty":        qty,
+            "idr":        idr_per_trade,
+            "peak":       curr,
+            "entry_time": time.time(),
+        }
+        save_positions()
+        send_telegram(
+            f"🛒 *AUTO BELI: {label}*\n"
+            f"💰 Harga: {fmt(curr)}\n"
+            f"📉 Low: {fmt(low)} — 📈 High: {fmt(high)}\n"
+            f"🔀 Spread: {spread_label}\n"
+            f"📌 {kondisi}\n\n"
+            f"*Sinyal ({sinyal}/{MIN_SIGNALS}):*\n"
+            f"{' | '.join(reasons)}\n"
+            f"RSI: {rsi:.0f}\n\n"
+            f"Modal: {fmt(idr_per_trade)}\n"
+            f"TP: +{TP_PCT}% | Trail: {TRAIL_PCT}%\n"
+            f"Hold: sampai profit! 💪"
+        )
+    else:
+        err = result.get("error", "") if result else "no response"
+        log(f"❌ Auto beli {label} gagal: {err}")
 
 # ── Manage Posisi ────────────────────────────────────────
 def manage_positions():
@@ -619,7 +663,7 @@ def manage_positions():
         elif has_exit and pl_pct >= 3 and pl > fee_est:  # exit sinyal hanya kalau sudah profit 3%+
             should_sell = True
             sell_reason = f"📊 Exit: {exit_desc}"
-        elif hours >= TIME_STOP_HR:
+        elif TIME_STOP_HR > 0 and hours >= TIME_STOP_HR:
             should_sell = True
             sell_reason = f"⏰ Time Stop {hours:.0f}j"
 
