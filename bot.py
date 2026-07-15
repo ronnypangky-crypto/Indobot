@@ -12,15 +12,15 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "10"))
-TP_PCT        = float(os.environ.get("TP_PCT",      "20"))
-TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "5"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "12"))
+TP_PCT        = float(os.environ.get("TP_PCT",      "10"))
+TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hidup
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
-MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "500000000"))  # min volume 500jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "10"))          # min harga Rp 10
+MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "350000000"))  # min volume 350jt
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "200"))          # min harga Rp 200
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 60 menit
