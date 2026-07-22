@@ -19,8 +19,8 @@ TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hi
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
-MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "150000000"))  # min volume 150jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "200"))          # min harga Rp 200
+MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "50000000"))  # min volume 500jt
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 10
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 60 menit
