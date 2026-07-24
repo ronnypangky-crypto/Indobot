@@ -19,8 +19,8 @@ TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hi
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
-MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "25000000"))  # min volume 25jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "100"))          # min harga Rp 100
+MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "20000000"))  # min volume 20jt
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 150
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 60 menit
@@ -756,7 +756,7 @@ def get_tg_updates():
     return []
 
 def handle_command(text, chat_id):
-    global bot_paused
+    global bot_paused, open_positions
     text = text.strip().lower()
     if text == "/cancel": text = "/batal"
     if text.startswith("/buy "): text = "/beli " + text[5:]
@@ -783,6 +783,8 @@ def handle_command(text, chat_id):
             f"/beli COIN — beli manual\n"
             f"/jual COIN — jual manual\n"
             f"/skip COIN — hapus posisi tanpa jual (dust)\n"
+        f"/restore COIN TOTAL\\_IDR — restore posisi manual\n"
+        f"/resetposisi — reset & restore semua dari Indodax\n"
             f"/restore COIN HARGA — restore posisi harga asli\n"
             f"/pause — pause bot\n"
             f"/resume — aktifkan bot\n"
@@ -886,6 +888,22 @@ def handle_command(text, chat_id):
             send_telegram(f"✅ *{pair_labels.get(pair, pair)} dilewati* — skip 1 jam.")
         else:
             send_telegram("Tidak ada aksi yang perlu dibatalkan.")
+
+    elif text == "/resetposisi":
+        send_telegram("🔄 *Reset posisi dimulai...*\nMengambil harga beli dari riwayat Indodax!")
+        open_positions = {}
+        # Hapus file lokal
+        try:
+            if os.path.exists(POSITIONS_FILE):
+                os.remove(POSITIONS_FILE)
+        except: pass
+        # Restore ulang dari wallet + tradeHistory
+        fetch_prices()
+        restore_from_wallet()
+        if open_positions:
+            send_telegram(f"✅ *Reset selesai!* {len(open_positions)} posisi restored dengan harga beli akurat!")
+        else:
+            send_telegram("⚠️ Tidak ada posisi yang bisa di-restore dari wallet!")
 
     elif text.startswith("/restore "):
         parts = text.split()
