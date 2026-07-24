@@ -19,8 +19,8 @@ TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hi
 BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
-MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "50000000"))  # min volume 500jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 10
+MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "25000000"))  # min volume 25jt
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "100"))          # min harga Rp 100
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "30"))          # laporan posisi tiap 60 menit
@@ -626,7 +626,7 @@ def manage_positions():
             open_positions[pid]["peak"] = curr
             peak = curr
 
-        sell_est  = curr * 0.97
+        sell_est  = curr  # pakai harga actual, bukan estimasi -3%
         pl        = (sell_est - buy_price) * qty
         pl_pct    = (sell_est - buy_price) / buy_price * 100
         fee_est   = (buy_price * qty * 0.003) + (sell_est * qty * 0.003)
@@ -708,9 +708,9 @@ def check_position_report():
     pos_list = ""
     for pid, pos in open_positions.items():
         curr  = prices.get(pid, pos["buy_price"])
-        pl_pct= (curr - pos["buy_price"]) / pos["buy_price"] * 100  # display tanpa fee
+        pl_pct= (curr - pos["buy_price"]) / pos["buy_price"] * 100
         hours = (time.time() - pos.get("entry_time", time.time())) / 3600
-        pl    = (curr * 0.97 - pos["buy_price"]) * pos["qty"]
+        pl    = (curr - pos["buy_price"]) * pos["qty"]
         emoji = "🟢" if pl_pct >= 0 else "🔴"
         pos_list += f"{emoji} {pair_labels.get(pid, pid)}: {pl_pct:.1f}% ({fmt(pl)}) | {hours:.0f}j/{TIME_STOP_HR}j\n"
     send_telegram(
