@@ -390,26 +390,25 @@ def get_buy_price_from_history(pair_id):
     try:
         result = indodax_request("tradeHistory", {
             "pair":  pair_id,
-            "count": "10",
-            "order": "desc"
+            "type":  "buy",
+            "count": "5",
         })
         if not result or result.get("success") != 1:
-            log(f"⚠️ tradeHistory {pair_id} gagal: {result}")
+            log(f"⚠️ tradeHistory {pair_id} gagal")
             return 0, 0
         trades = result.get("return", {}).get("trades", [])
         if not trades:
             log(f"⚠️ tradeHistory {pair_id} kosong")
             return 0, 0
-        log(f"📋 tradeHistory {pair_id}: {len(trades)} trades, first: {trades[0]}")
-        for trade in trades:
-            if trade.get("type") == "buy":
-                price = float(str(trade.get("price", "0")).replace(",", ""))
-                qty   = float(str(trade.get("amount", "0")).replace(",", ""))
-                if price > 0 and qty > 0:
-                    log(f"📋 Harga beli asli {pair_id}: {fmt(price)} × {qty:.6f}")
-                    return price, qty
+        latest = trades[0]
+        price  = float(str(latest.get("price", "0")).replace(",", ""))
+        qty    = float(str(latest.get("amount", "0")).replace(",", ""))
+        total  = price * qty
+        if price > 0 and qty > 0:
+            log(f"📋 Harga beli {pair_id}: {fmt(price)} × {qty:.6f} = {fmt(total)}")
+            return price, total
     except Exception as e:
-        log(f"⚠️ Gagal ambil trade history {pair_id}: {e}")
+        log(f"⚠️ Gagal ambil history {pair_id}: {e}")
     return 0, 0
 
 def restore_from_wallet():
