@@ -11,7 +11,7 @@ TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
-TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "300"))
+TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "500"))
 MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "10"))
 TP_PCT        = float(os.environ.get("TP_PCT",      "10"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
@@ -110,7 +110,10 @@ def get_idr_balance():
     result = indodax_request("getInfo")
     if result and result.get("success") == 1:
         raw   = str(result.get("return", {}).get("balance", {}).get("idr", "0"))
-        modal = float(raw.replace(",", ""))
+        # Hapus titik dan koma pemisah ribuan
+        raw   = raw.replace(",", "").replace(".", "")
+        modal = float(raw) if raw else 0
+        log(f"💵 Balance IDR: {fmt(modal)}")
     return modal
 
 def get_coin_balance(coin):
@@ -388,13 +391,30 @@ def load_positions():
 def get_buy_price_from_history(pair_id):
     """Ambil harga beli terakhir dari trade history Indodax"""
     try:
-        result = indodax_request("tradeHistory", {
-            "pair":  pair_id,
-            "type":  "buy",
-            "count": "5",
-        })
+        # Debug: cek raw response
+        try:
+            params = {
+                "method": "tradeHistory",
+                "pair":   pair_id,
+                "type":   "buy",
+                "count":  "5",
+                "timestamp":  str(int(time.time() * 1000)),
+                "recvWindow": "5000"
+            }
+            from urllib.parse import urlencode
+            import hmac, hashlib
+            body = urlencode(params)
+            sig  = hmac.new(API_SECRET.encode(), body.encode(), hashlib.sha512).hexdigest()
+            r = requests.post("https://indodax.com/tapi", data=params,
+                            headers={"Key": API_KEY, "Sign": sig}, timeout=15)
+            log(f"📋 tradeHistory raw status: {r.status_code}")
+            log(f"📋 tradeHistory raw response: {r.text[:200]}")
+            result = r.json() if r.text.strip() else None
+        except Exception as e:
+            log(f"⚠️ tradeHistory debug error: {e}")
+            result = None
         if not result or result.get("success") != 1:
-            log(f"⚠️ tradeHistory {pair_id} gagal")
+            log(f"⚠️ tradeHistory {pair_id} gagal: {result}")
             return 0, 0
         trades = result.get("return", {}).get("trades", [])
         if not trades:
