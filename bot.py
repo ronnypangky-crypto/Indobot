@@ -12,11 +12,11 @@ API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
 TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "500"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "10"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "20"))
 TP_PCT        = float(os.environ.get("TP_PCT",      "10"))
 TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "3"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hidup
-BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
+BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "24"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
 MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "20000000"))  # min volume 20jt
@@ -559,7 +559,8 @@ def scan_candidates():
         return
 
     get_idr_balance()
-    idr_per_trade = modal / MAX_TRADES
+    slots_left    = MAX_TRADES - active
+    idr_per_trade = modal / slots_left if slots_left > 0 else modal
     if idr_per_trade < 3000:
         log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
         return
