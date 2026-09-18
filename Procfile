@@ -1,1 +1,1 @@
-worker: python keudailybot.py
+worker: python bot.py
