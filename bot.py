@@ -11,16 +11,16 @@ TG_CHAT_ID    = os.environ.get("TELEGRAM_CHAT_ID", "")
 API_KEY       = os.environ.get("INDODAX_API_KEY", "")
 API_SECRET    = os.environ.get("INDODAX_SECRET_KEY", "")
 
-TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "400"))
-MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "20"))
-TP_PCT        = float(os.environ.get("TP_PCT",      "25"))
-TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "10"))
+TOP_N_PAIRS   = int(os.environ.get("TOP_N_PAIRS",   "450"))
+MAX_TRADES    = int(os.environ.get("MAX_TRADES",    "30"))
+TP_PCT        = float(os.environ.get("TP_PCT",      "35"))
+TRAIL_PCT     = float(os.environ.get("TRAIL_PCT",   "15"))
 TIME_STOP_HR  = int(os.environ.get("TIME_STOP_HR",  "0"))   # 0 = hold seumur hidup
-BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "2"))
+BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "720"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
 MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "30000000"))  # min volume 30jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 150
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 250
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "60"))          # laporan posisi tiap 60 menit
@@ -560,7 +560,7 @@ def scan_candidates():
 
     get_idr_balance()
     slots_left    = MAX_TRADES - active
-    idr_per_trade = modal / slots_left if slots_left > 0 else modal
+    idr_per_trade = modal / MAX_TRADES
     if idr_per_trade < 3000:
         log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
         return
