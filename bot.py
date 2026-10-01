@@ -20,7 +20,7 @@ BLACKLIST_HR  = int(os.environ.get("BLACKLIST_HR",  "720"))
 SCAN_INTERVAL = int(os.environ.get("SCAN_INTERVAL", "10"))
 MIN_SIGNALS   = int(os.environ.get("MIN_SIGNALS",   "4"))
 MIN_VOL_IDR   = float(os.environ.get("MIN_VOL_IDR",  "30000000"))  # min volume 30jt
-MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "150"))          # min harga Rp 250
+MIN_PRICE     = float(os.environ.get("MIN_PRICE",    "250"))          # min harga Rp 250
 MAX_SPREAD    = float(os.environ.get("MAX_SPREAD",   "1.5"))         # max spread 1.5%
 WARN_STOP_HR  = int(os.environ.get("WARN_STOP_HR",  "24"))          # warning sebelum time stop
 POSITION_RPT  = int(os.environ.get("POSITION_RPT",  "60"))          # laporan posisi tiap 60 menit
@@ -560,7 +560,7 @@ def scan_candidates():
 
     get_idr_balance()
     slots_left    = MAX_TRADES - active
-    idr_per_trade = modal / MAX_TRADES
+    idr_per_trade = modal / slots_left if slots_left > 0 else modal
     if idr_per_trade < 3000:
         log(f"⚠️ Modal per trade terlalu kecil: {fmt(idr_per_trade)}")
         return
